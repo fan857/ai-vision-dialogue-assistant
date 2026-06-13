@@ -43,6 +43,69 @@
         </div>
       </section>
 
+      <!-- 摄像头截图与压缩区域 -->
+      <section class="capture-section">
+        <h2>摄像头截图与压缩</h2>
+        <p class="capture-privacy-hint">
+          摄像头视频不会持续上传。只有用户主动截图时，页面才会处理当前画面，并在上传前进行压缩。
+        </p>
+        <div class="capture-status" :class="`capture-status-${captureStatus}`">
+          {{ captureStatusText }}
+        </div>
+        <div class="capture-controls">
+          <button
+            class="btn-primary"
+            @click="captureCurrentFrame"
+            :disabled="!isCameraActive || captureStatus === 'capturing'"
+          >
+            截取当前画面
+          </button>
+          <button
+            class="btn-secondary"
+            @click="clearCapturedImage"
+            :disabled="!capturedImageBlob && !capturedImagePreviewUrl"
+          >
+            清除截图
+          </button>
+        </div>
+        <div v-if="!isCameraActive" class="capture-warning">
+          请先打开摄像头，再进行截图。
+        </div>
+        <div v-if="captureError" class="capture-error">
+          {{ captureError }}
+        </div>
+        <div v-if="capturedImagePreviewUrl" class="capture-preview">
+          <h3>截图预览</h3>
+          <img
+            :src="capturedImagePreviewUrl"
+            alt="摄像头截图"
+            class="capture-preview-image"
+          />
+          <div v-if="capturedImageMetadata" class="capture-metadata">
+            <div class="capture-meta-row">
+              <span class="capture-meta-label">原始尺寸：</span>
+              <span>{{ capturedImageMetadata.originalWidth }} × {{ capturedImageMetadata.originalHeight }} px</span>
+            </div>
+            <div class="capture-meta-row">
+              <span class="capture-meta-label">压缩后尺寸：</span>
+              <span>{{ capturedImageMetadata.compressedWidth }} × {{ capturedImageMetadata.compressedHeight }} px</span>
+            </div>
+            <div class="capture-meta-row">
+              <span class="capture-meta-label">文件大小：</span>
+              <span>{{ formatFileSize(capturedImageMetadata.compressedSize) }}</span>
+            </div>
+            <div class="capture-meta-row">
+              <span class="capture-meta-label">图片类型：</span>
+              <span>{{ capturedImageMetadata.mimeType }}</span>
+            </div>
+            <div class="capture-meta-row">
+              <span class="capture-meta-label">截图时间：</span>
+              <span>{{ capturedImageMetadata.capturedAt }}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- 麦克风语音识别区域 -->
       <section class="voice-section">
         <h2>麦克风语音识别</h2>
@@ -98,6 +161,7 @@
           <li>✅ 摄像头调用（已完成）</li>
           <li>✅ 麦克风调用（已完成）</li>
           <li>✅ 语音识别（已完成）</li>
+          <li>✅ 摄像头截图与前端压缩（已完成）</li>
           <li>🔄 视觉识别（开发中）</li>
           <li>🔄 AI 回复生成（开发中）</li>
           <li>🔄 语音合成（开发中）</li>
@@ -118,6 +182,11 @@
 <script setup>
 import { ref, computed, onBeforeUnmount } from 'vue'
 
+// ===== 图片压缩常量 =====
+const MAX_IMAGE_DIMENSION = 1280
+const JPEG_QUALITY = 0.75
+const COMPRESSED_MIME_TYPE = 'image/jpeg'
+
 // ===== 摄像头相关状态 =====
 const videoElement = ref(null)
 const isCameraActive = ref(false)
@@ -134,6 +203,43 @@ const cameraStatusText = computed(() => {
 })
 
 let mediaStream = null
+
+// ===== 截图与压缩相关状态 =====
+const captureStatus = ref('idle') // idle, capturing, completed, failed
+const captureError = ref('')
+const capturedImageBlob = ref(null)
+const capturedImagePreviewUrl = ref('')
+const capturedImageMetadata = ref(null)
+
+const captureStatusText = computed(() => {
+  const statusMap = {
+    idle: '尚未截图',
+    capturing: '正在截取并压缩画面……',
+    completed: '画面已准备，可供后续视觉问答使用',
+    failed: '截图失败，请重试'
+  }
+  return statusMap[captureStatus.value] || ''
+})
+
+// 工具：将文件大小转成易读格式
+const formatFileSize = (bytes) => {
+  if (typeof bytes !== 'number' || isNaN(bytes) || bytes < 0) return '-'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+// 工具：释放旧 Object URL，避免内存泄漏
+const revokePreviewUrl = () => {
+  if (capturedImagePreviewUrl.value) {
+    try {
+      URL.revokeObjectURL(capturedImagePreviewUrl.value)
+    } catch (e) {
+      console.error('Failed to revoke object URL:', e)
+    }
+    capturedImagePreviewUrl.value = ''
+  }
+}
 
 // ===== 语音识别相关状态 =====
 const speechStatus = ref('idle') // idle, requesting, recognizing, completed, failed, unsupported
@@ -208,6 +314,98 @@ const stopCamera = async () => {
 
   isCameraActive.value = false
   cameraStatus.value = 'idle'
+}
+
+// ===== 截图与压缩方法 =====
+const captureCurrentFrame = async () => {
+  captureError.value = ''
+
+  if (!isCameraActive.value) {
+    captureError.value = '请先打开摄像头，再进行截图。'
+    captureStatus.value = 'failed'
+    return
+  }
+
+  const video = videoElement.value
+  if (!video || video.readyState < 2) {
+    captureError.value = '摄像头尚未准备完成，请稍候再试。'
+    captureStatus.value = 'failed'
+    return
+  }
+
+  const originalWidth = video.videoWidth
+  const originalHeight = video.videoHeight
+  if (!originalWidth || !originalHeight) {
+    captureError.value = '无法读取当前画面尺寸，请重试。'
+    captureStatus.value = 'failed'
+    return
+  }
+
+  captureStatus.value = 'capturing'
+
+  try {
+    // 计算压缩后尺寸：保持比例，最长边不超过 MAX_IMAGE_DIMENSION
+    let targetWidth = originalWidth
+    let targetHeight = originalHeight
+    const longestSide = Math.max(originalWidth, originalHeight)
+    if (longestSide > MAX_IMAGE_DIMENSION) {
+      const scale = MAX_IMAGE_DIMENSION / longestSide
+      targetWidth = Math.round(originalWidth * scale)
+      targetHeight = Math.round(originalHeight * scale)
+    }
+
+    // 离屏 canvas 绘制当前帧
+    const canvas = document.createElement('canvas')
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      throw new Error('无法创建 canvas 2D 上下文')
+    }
+    ctx.drawImage(video, 0, 0, targetWidth, targetHeight)
+
+    // 使用 toBlob 输出 JPEG
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (result) => {
+          if (result) resolve(result)
+          else reject(new Error('canvas.toBlob 返回空结果'))
+        },
+        COMPRESSED_MIME_TYPE,
+        JPEG_QUALITY
+      )
+    })
+
+    // 释放旧预览 URL，避免内存泄漏
+    revokePreviewUrl()
+
+    const previewUrl = URL.createObjectURL(blob)
+
+    capturedImageBlob.value = blob
+    capturedImagePreviewUrl.value = previewUrl
+    capturedImageMetadata.value = {
+      originalWidth,
+      originalHeight,
+      compressedWidth: targetWidth,
+      compressedHeight: targetHeight,
+      compressedSize: blob.size,
+      mimeType: blob.type || COMPRESSED_MIME_TYPE,
+      capturedAt: new Date().toLocaleString('zh-CN')
+    }
+    captureStatus.value = 'completed'
+  } catch (error) {
+    console.error('Capture failed:', error)
+    captureError.value = '截图失败：' + (error && error.message ? error.message : '未知错误')
+    captureStatus.value = 'failed'
+  }
+}
+
+const clearCapturedImage = () => {
+  revokePreviewUrl()
+  capturedImageBlob.value = null
+  capturedImageMetadata.value = null
+  captureError.value = ''
+  captureStatus.value = 'idle'
 }
 
 // ===== 语音识别方法 =====
@@ -311,6 +509,8 @@ onBeforeUnmount(() => {
   if (recognition) {
     try { recognition.abort() } catch (e) { /* noop */ }
   }
+  // 释放截图预览 URL，避免内存泄漏
+  revokePreviewUrl()
 })
 </script>
 
@@ -596,6 +796,119 @@ li {
 
 li:last-child {
   border-bottom: none;
+}
+
+/* 截图与压缩区域样式 */
+.capture-section {
+  text-align: left;
+}
+
+.capture-privacy-hint {
+  font-size: 0.9rem;
+  opacity: 0.9;
+  margin: 0 0 1rem 0;
+  padding: 0.6rem 0.9rem;
+  background: rgba(78, 205, 196, 0.15);
+  border-left: 3px solid rgba(78, 205, 196, 0.7);
+  border-radius: 4px;
+}
+
+.capture-status {
+  display: inline-block;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  margin-bottom: 1rem;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.capture-status-idle {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.capture-status-capturing {
+  background: rgba(78, 205, 196, 0.4);
+  color: #fff;
+}
+
+.capture-status-completed {
+  background: rgba(102, 187, 106, 0.5);
+  color: #fff;
+}
+
+.capture-status-failed {
+  background: rgba(255, 107, 107, 0.5);
+  color: #fff;
+}
+
+.capture-controls {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.capture-warning {
+  background: rgba(255, 193, 7, 0.15);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+  color: #ffe8a1;
+  padding: 0.5rem 0.85rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+
+.capture-error {
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px solid rgba(255, 107, 107, 0.5);
+  color: #ffd1d1;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.capture-preview {
+  margin-top: 1.25rem;
+}
+
+.capture-preview h3 {
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem 0;
+  color: #fff;
+}
+
+.capture-preview-image {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  margin-bottom: 1rem;
+}
+
+.capture-metadata {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  font-size: 0.92rem;
+  line-height: 1.7;
+}
+
+.capture-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.capture-meta-label {
+  color: #4ecdc4;
+  font-weight: 500;
+  min-width: 7rem;
 }
 
 pre {
