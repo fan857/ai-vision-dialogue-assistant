@@ -50,25 +50,31 @@ def test_ws_rejects_invalid_base64():
         assert evt["type"] == "session.error"
 
 
-def test_ws_no_api_key_returns_error():
+def test_ws_no_api_key_returns_error(monkeypatch):
     """缺 DASHSCOPE_API_KEY 时返回 session.error。"""
-    # 临时移除 DASHSCOPE_API_KEY
-    saved = os.environ.pop("DASHSCOPE_API_KEY", None)
-    try:
-        client = TestClient(app)
-        png_bytes = _make_png_bytes()
-        with client.websocket_connect("/ws/realtime-voice") as ws:
-            ws.send_json({
-                "type": "session.init",
-                "image_base64": base64.b64encode(png_bytes).decode("ascii"),
-                "content_type": "image/png"
-            })
-            evt = ws.receive_json()
-            assert evt["type"] == "session.error"
-            assert "DASHSCOPE_API_KEY" in evt["message"] or "未配置" in evt["message"]
-    finally:
-        if saved is not None:
-            os.environ["DASHSCOPE_API_KEY"] = saved
+    # 替换 _get_config，让它返回空 api_key
+    import services.qwen_realtime as qr
+
+    def _empty_config():
+        return {
+            "api_key": "",
+            "url": "wss://example.invalid/realtime",
+            "model": "qwen-test",
+            "voice": "Tina",
+        }
+    monkeypatch.setattr(qr, "_get_config", _empty_config)
+
+    client = TestClient(app)
+    png_bytes = _make_png_bytes()
+    with client.websocket_connect("/ws/realtime-voice") as ws:
+        ws.send_json({
+            "type": "session.init",
+            "image_base64": base64.b64encode(png_bytes).decode("ascii"),
+            "content_type": "image/png"
+        })
+        evt = ws.receive_json()
+        assert evt["type"] == "session.error"
+        assert "DASHSCOPE_API_KEY" in evt["message"] or "未配置" in evt["message"]
 
 
 def test_ws_image_too_large():

@@ -176,16 +176,17 @@ class QwenRealtimeSession:
         ]
 
         try:
+            # websockets>=10 改名为 extra_headers（旧名 additional_headers 已废弃）
             self._ws = await websockets.connect(
                 url,
-                additional_headers=headers,
+                extra_headers=headers,
                 max_size=16 * 1024 * 1024,
                 ping_interval=20,
                 ping_timeout=20,
             )
         except Exception as e:  # noqa: BLE001
             raise QwenRealtimeError(
-                f"无法连接阿里云百炼实时语音服务：{type(e).__name__}",
+                f"无法连接阿里云百炼实时语音服务：{type(e).__name__}: {e}",
                 error_type="connect_error",
             ) from e
 
