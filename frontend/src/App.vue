@@ -185,6 +185,40 @@
           <div v-if="dialogueResult.answer" class="dialogue-answer">
             <h3>AI 视觉回答</h3>
             <div class="dialogue-answer-text">{{ dialogueResult.answer }}</div>
+            <div class="dialogue-speech-controls">
+              <div class="dialogue-speech-status" :class="`dialogue-speech-status-${ttsStatus}`">
+                语音状态：{{ ttsStatusText }}
+              </div>
+              <div class="dialogue-speech-buttons">
+                <button
+                  class="btn-primary btn-small"
+                  @click="speakCurrentAnswer"
+                  :disabled="!speechSynthesisSupported || !dialogueResult.answer || isSpeaking"
+                >
+                  朗读回答
+                </button>
+                <button
+                  class="btn-secondary btn-small"
+                  @click="stopSpeaking"
+                  :disabled="!isSpeaking"
+                >
+                  停止朗读
+                </button>
+                <label class="dialogue-speech-toggle">
+                  <input
+                    type="checkbox"
+                    v-model="autoSpeakEnabled"
+                  />
+                  <span>自动朗读 AI 回答</span>
+                </label>
+              </div>
+              <div v-if="!speechSynthesisSupported" class="dialogue-speech-warn">
+                当前浏览器不支持语音合成，请使用最新版 Chrome 或 Edge。
+              </div>
+              <div v-if="ttsError" class="dialogue-speech-error">
+                {{ ttsError }}
+              </div>
+            </div>
           </div>
           <div v-if="dialogueResult.model" class="dialogue-meta-row">
             <span class="dialogue-meta-label">模型：</span>
@@ -218,7 +252,7 @@
           <li>✅ 视觉对话请求链路（已完成）</li>
           <li>✅ 视觉识别（已完成 - Doubao-Seed-2.0-Pro）</li>
           <li>✅ AI 回复生成（已完成）</li>
-          <li>🔄 语音合成（开发中）</li>
+          <li>✅ 语音合成（已完成 - 浏览器原生 SpeechSynthesis）</li>
         </ul>
       </section>
 
@@ -496,6 +530,11 @@ const submitVisualQuestion = async () => {
     return
   }
 
+  // 开始新请求前，先停止可能正在播放的旧语音，避免与新回答重叠
+  if (isSpeaking.value) {
+    stopSpeaking()
+  }
+
   dialogueStatus.value = 'submitting'
 
   try {
@@ -525,6 +564,17 @@ const submitVisualQuestion = async () => {
     const data = await response.json()
     dialogueResult.value = data
     dialogueStatus.value = 'success'
+
+    // 成功后，如果开启自动朗读，则朗读新回答
+    if (autoSpeakEnabled.value && data && data.answer) {
+      // 用 nextTick 确保 DOM 更新后再朗读（避免影响页面状态）
+      try {
+        speakText(data.answer)
+      } catch (e) {
+        // 朗读失败不影响文字回答
+        console.error('Auto speak failed:', e)
+      }
+    }
   } catch (error) {
     console.error('Submit visual question failed:', error)
     if (error && error.name === 'TypeError' && /fetch/i.test(error.message || '')) {
@@ -629,6 +679,189 @@ const stopSpeechRecognition = () => {
   }
 }
 
+// ===== 语音合成（朗读 AI 回答）相关状态 =====
+const ttsStatus = ref('idle') // idle, speaking, done, stopped, failed, unsupported
+const ttsError = ref('')
+const isSpeaking = ref(false)
+const autoSpeakEnabled = ref(true)
+
+// 检测浏览器是否支持 SpeechSynthesis
+const speechSynthesisSupported = computed(
+  () => typeof window !== 'undefined' && typeof window.speechSynthesis !== 'undefined'
+)
+
+const ttsStatusText = computed(() => {
+  if (!speechSynthesisSupported.value) {
+    return '浏览器不支持语音合成'
+  }
+  const statusMap = {
+    idle: '未朗读',
+    speaking: '正在朗读',
+    done: '已完成',
+    stopped: '已停止',
+    failed: '朗读失败',
+    unsupported: '浏览器不支持语音合成'
+  }
+  return statusMap[ttsStatus.value] || ''
+})
+
+// 缓存语音列表和已选中的中文 voice
+let ttsVoices = []
+let ttsZhVoice = null
+let ttsVoicesLoaded = false
+
+// 选择最合适的中文 voice
+const pickZhVoice = (voices) => {
+  if (!voices || voices.length === 0) return null
+  // 优先 zh-CN（普通话）
+  const zhCn = voices.find((v) => (v.lang || '').toLowerCase() === 'zh-cn')
+  if (zhCn) return zhCn
+  // 其次任意中文 lang 前缀
+  const zhAny = voices.find((v) => (v.lang || '').toLowerCase().startsWith('zh'))
+  if (zhAny) return zhAny
+  // 退而求其次：默认（让浏览器自己决定）
+  return null
+}
+
+const loadVoices = () => {
+  if (!speechSynthesisSupported.value) return
+  try {
+    ttsVoices = window.speechSynthesis.getVoices() || []
+    ttsVoicesLoaded = true
+    ttsZhVoice = pickZhVoice(ttsVoices)
+  } catch (e) {
+    console.error('Failed to load voices:', e)
+  }
+}
+
+// 某些浏览器需要监听 voiceschanged 才会填充
+let ttsVoicesListener = null
+
+if (speechSynthesisSupported.value) {
+  loadVoices()
+  if (typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
+    ttsVoicesListener = () => loadVoices()
+    try {
+      window.speechSynthesis.onvoiceschanged = ttsVoicesListener
+    } catch (e) {
+      // 某些实现不支持 onvoiceschanged 赋值，忽略
+    }
+  }
+}
+
+// 当前正在朗读的 utterance（用于停止）
+let ttsUtterance = null
+
+const speakText = (text) => {
+  ttsError.value = ''
+
+  if (!speechSynthesisSupported.value) {
+    ttsStatus.value = 'unsupported'
+    ttsError.value = '当前浏览器不支持语音合成。'
+    return
+  }
+
+  const cleanText = (text || '').toString().trim()
+  if (!cleanText) {
+    ttsError.value = '没有可朗读的内容。'
+    ttsStatus.value = 'failed'
+    return
+  }
+
+  // 每次开始新朗读前，先停止可能仍在播放的旧内容
+  try {
+    window.speechSynthesis.cancel()
+  } catch (e) {
+    console.error('Failed to cancel previous speech:', e)
+  }
+
+  // 部分浏览器 cancel 后立即 speak 会失败，加一点重试
+  const trySpeak = (retries) => {
+    try {
+      const u = new SpeechSynthesisUtterance(cleanText)
+      u.lang = 'zh-CN'
+      u.rate = 1
+      u.pitch = 1
+      u.volume = 1
+      // 选择已缓存的 voice
+      if (ttsZhVoice) {
+        try { u.voice = ttsZhVoice } catch (e) { /* noop */ }
+      }
+
+      u.onstart = () => {
+        isSpeaking.value = true
+        ttsStatus.value = 'speaking'
+        ttsError.value = ''
+      }
+
+      u.onend = () => {
+        isSpeaking.value = false
+        ttsUtterance = null
+        // 如果是被外部 cancel 触发的 onend，状态会保留为 stopped；否则正常完成
+        if (ttsStatus.value !== 'stopped') {
+          ttsStatus.value = 'done'
+        }
+      }
+
+      u.onerror = (event) => {
+        isSpeaking.value = false
+        ttsUtterance = null
+        const errCode = (event && event.error) || 'unknown'
+        // canceled 是用户主动停止，不要当错误
+        if (errCode === 'canceled' || errCode === 'interrupted') {
+          if (ttsStatus.value !== 'stopped') {
+            ttsStatus.value = 'stopped'
+          }
+          return
+        }
+        console.error('Speech synthesis error:', errCode)
+        ttsError.value = '语音朗读失败：' + errCode
+        ttsStatus.value = 'failed'
+      }
+
+      ttsUtterance = u
+      window.speechSynthesis.speak(u)
+    } catch (e) {
+      if (retries > 0) {
+        // 极少数浏览器 cancel 后立即 speak 抛 InvalidStateError，重试一次
+        setTimeout(() => trySpeak(retries - 1), 50)
+      } else {
+        console.error('Speak failed:', e)
+        ttsError.value = '语音朗读启动失败：' + (e && e.message ? e.message : '未知错误')
+        ttsStatus.value = 'failed'
+        isSpeaking.value = false
+      }
+    }
+  }
+
+  trySpeak(2)
+}
+
+const speakCurrentAnswer = () => {
+  const answer = dialogueResult.value && dialogueResult.value.answer
+  if (!answer) {
+    ttsError.value = '当前没有可朗读的 AI 回答。'
+    ttsStatus.value = 'failed'
+    return
+  }
+  speakText(answer)
+}
+
+const stopSpeaking = () => {
+  if (!speechSynthesisSupported.value) return
+  try {
+    window.speechSynthesis.cancel()
+  } catch (e) {
+    console.error('Failed to cancel speech:', e)
+  }
+  isSpeaking.value = false
+  ttsUtterance = null
+  // 只有在原本是 speaking 状态时才标 stopped
+  if (ttsStatus.value === 'speaking') {
+    ttsStatus.value = 'stopped'
+  }
+}
+
 // ===== 生命周期 =====
 onBeforeUnmount(() => {
   if (isCameraActive.value) {
@@ -639,6 +872,19 @@ onBeforeUnmount(() => {
   }
   // 释放截图预览 URL，避免内存泄漏
   revokePreviewUrl()
+  // 停止任何正在播放的语音
+  if (speechSynthesisSupported.value) {
+    try { window.speechSynthesis.cancel() } catch (e) { /* noop */ }
+  }
+  // 移除 voiceschanged 监听
+  if (ttsVoicesListener && speechSynthesisSupported.value) {
+    try {
+      window.speechSynthesis.onvoiceschanged = null
+    } catch (e) {
+      // noop
+    }
+    ttsVoicesListener = null
+  }
 })
 </script>
 
@@ -1155,6 +1401,95 @@ li:last-child {
   word-break: break-word;
   line-height: 1.7;
   font-size: 0.95rem;
+}
+
+/* PR7: AI 回答语音合成朗读控件 */
+.dialogue-speech-controls {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed rgba(255, 255, 255, 0.18);
+}
+
+.dialogue-speech-status {
+  display: inline-block;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  margin-bottom: 0.6rem;
+  background: rgba(255, 255, 255, 0.12);
+  color: #e6f1ff;
+}
+
+.dialogue-speech-status-idle {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.dialogue-speech-status-speaking {
+  background: rgba(78, 205, 196, 0.45);
+  color: #fff;
+}
+
+.dialogue-speech-status-done {
+  background: rgba(102, 187, 106, 0.45);
+  color: #fff;
+}
+
+.dialogue-speech-status-stopped {
+  background: rgba(255, 193, 7, 0.4);
+  color: #fff;
+}
+
+.dialogue-speech-status-failed,
+.dialogue-speech-status-unsupported {
+  background: rgba(255, 107, 107, 0.4);
+  color: #fff;
+}
+
+.dialogue-speech-buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.btn-small {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.9rem;
+}
+
+.dialogue-speech-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  user-select: none;
+  color: #e6f1ff;
+}
+
+.dialogue-speech-toggle input {
+  cursor: pointer;
+}
+
+.dialogue-speech-warn {
+  margin-top: 0.5rem;
+  font-size: 0.88rem;
+  color: #ffd1d1;
+  background: rgba(255, 107, 107, 0.18);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  padding: 0.45rem 0.7rem;
+  border-radius: 4px;
+}
+
+.dialogue-speech-error {
+  margin-top: 0.5rem;
+  font-size: 0.88rem;
+  color: #ffd1d1;
+  background: rgba(255, 107, 107, 0.15);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  padding: 0.45rem 0.7rem;
+  border-radius: 4px;
 }
 
 .dialogue-meta-row {
