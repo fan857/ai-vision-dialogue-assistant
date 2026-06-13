@@ -1,10 +1,26 @@
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+import base64
 import hashlib
+import json
 import logging
+import os
 import uuid
+from typing import Any, Dict
+
+from dotenv import load_dotenv
 
 from services.vision_model import VisionModelError, call_vision_model
+from services.qwen_realtime import (
+    QwenRealtimeError,
+    QwenRealtimeSession,
+)
+
+# 加载 backend/.env（如果存在）
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_ENV_PATH = os.path.join(_BACKEND_DIR, ".env")
+if os.path.exists(_ENV_PATH):
+    load_dotenv(_ENV_PATH, override=False)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -146,6 +162,199 @@ async def vision_dialogue(
         },
         "usage": model_result.get("usage"),
     }
+
+
+# ============================================================================
+# PR8 - 实时语音视觉对话 WebSocket
+# ============================================================================
+
+# WebSocket 允许跨域（同源在 Vite 代理下已支持，ws://localhost:5173 -> ws://localhost:3001）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "ws://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 允许的实时会话图片格式与大小
+REALTIME_ALLOWED_IMAGE_TYPES = ALLOWED_IMAGE_TYPES
+REALTIME_MAX_IMAGE_SIZE_BYTES = MAX_IMAGE_SIZE_BYTES
+
+# 默认图片元数据
+REALTIME_DEFAULT_CONTENT_TYPE = "image/jpeg"
+
+
+@app.websocket("/ws/realtime-voice")
+async def ws_realtime_voice(websocket: WebSocket):
+    """
+    实时语音视觉对话 WebSocket 代理（PR8）。
+
+    协议（与前端约定）：
+    - 第 1 条消息（text JSON）：会话初始化
+        {
+          "type": "session.init",
+          "image_base64": "...",
+          "content_type": "image/jpeg"
+        }
+      后端返回 {"type": "session.ready"} 或 {"type": "session.error", "message": "..."}
+    - 后续 binary 帧：16kHz 16bit 单声道 PCM 音频（直接转发到 Qwen）
+    - 控制消息（text JSON）：
+        {"type": "cancel"}  -> 取消当前响应
+        {"type": "ping"}    -> 心跳
+    - 关闭：客户端断开即可
+
+    服务端 -> 客户端事件：直接透传 Qwen Realtime 的 JSON 事件，额外补充：
+        {"type": "server.error", "error": "..."}
+        {"type": "server.disconnected"}
+        {"type": "vision.analyzing", "question": "..."}
+        {"type": "vision.analyzed", "question": "...", "output_excerpt": "..."}
+    - 音频下行：二进制帧（24kHz 16bit 单声道 PCM），与 JSON 事件分离
+    """
+    await websocket.accept()
+    session_id = str(uuid.uuid4())
+    logger.info("Realtime WS opened. session_id=%s", session_id)
+
+    # 会话状态
+    qwen_session: QwenRealtimeSession | None = None
+    frame_bytes: bytes = b""
+    content_type: str = REALTIME_DEFAULT_CONTENT_TYPE
+    initialized: bool = False
+
+    async def forward_event(evt: Dict[str, Any]) -> None:
+        try:
+            await websocket.send_text(json.dumps(evt, ensure_ascii=False))
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def forward_audio(pcm: bytes) -> None:
+        if not pcm:
+            return
+        try:
+            await websocket.send_bytes(pcm)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        while True:
+            msg = await websocket.receive()
+
+            if msg.get("type") == "websocket.disconnect":
+                break
+
+            if "bytes" in msg and msg["bytes"] is not None:
+                if not initialized or qwen_session is None:
+                    continue
+                try:
+                    await qwen_session.send_audio(msg["bytes"])
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("send_audio failed: %s", e)
+                continue
+
+            if "text" in msg and msg["text"] is not None:
+                raw = msg["text"]
+                try:
+                    payload = json.loads(raw)
+                except Exception:  # noqa: BLE001
+                    continue
+                ptype = payload.get("type")
+
+                if ptype == "ping":
+                    try:
+                        await websocket.send_text(
+                        json.dumps({"type": "pong"}, ensure_ascii=False)
+                    )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+
+                if ptype == "cancel":
+                    if qwen_session is not None:
+                        await qwen_session.send_response_cancel()
+                    continue
+
+                if ptype == "session.init":
+                    # 解析图片
+                    b64 = (payload.get("image_base64") or "").strip()
+                    ct = (payload.get("content_type") or "").lower().strip()
+                    if not b64:
+                        await forward_event(
+                            {"type": "session.error", "message": "缺少 image_base64"}
+                        )
+                        continue
+                    if not ct or ct not in REALTIME_ALLOWED_IMAGE_TYPES:
+                        ct = REALTIME_DEFAULT_CONTENT_TYPE
+                    try:
+                        frame_bytes = base64.b64decode(b64, validate=True)
+                    except Exception:  # noqa: BLE001
+                        await forward_event(
+                            {"type": "session.error", "message": "image_base64 无法解析"}
+                        )
+                        continue
+                    if not frame_bytes:
+                        await forward_event(
+                            {"type": "session.error", "message": "图片内容为空"}
+                        )
+                        continue
+                    if len(frame_bytes) > REALTIME_MAX_IMAGE_SIZE_BYTES:
+                        await forward_event(
+                            {"type": "session.error", "message": "图片超过 2 MB"}
+                        )
+                        continue
+                    content_type = ct
+
+                    # 建立到 Qwen 的会话
+                    try:
+                        qwen_session = QwenRealtimeSession(
+                            on_event=forward_event,
+                            on_audio_delta=forward_audio,
+                        )
+                        await qwen_session.open(
+                            frame_bytes=frame_bytes,
+                            content_type=content_type,
+                        )
+                        initialized = True
+                        await forward_event({"type": "session.ready"})
+                    except QwenRealtimeError as e:
+                        logger.warning(
+                            "Qwen realtime open failed. session_id=%s error_type=%s",
+                            session_id, e.error_type,
+                        )
+                        await forward_event(
+                            {"type": "session.error", "message": e.message}
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception(
+                            "Unexpected error opening qwen session. session_id=%s", session_id
+                        )
+                        await forward_event(
+                            {
+                                "type": "session.error",
+                                "message": f"实时会话启动失败：{type(e).__name__}",
+                            }
+                        )
+                    continue
+
+                # 其它类型暂不处理
+                continue
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001
+        logger.exception("Realtime WS loop crashed. session_id=%s", session_id)
+    finally:
+        # 清理：关闭 Qwen 会话 + 释放图片
+        if qwen_session is not None:
+            try:
+                await qwen_session.close()
+            except Exception:  # noqa: BLE001
+                pass
+        frame_bytes = b""
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.info("Realtime WS closed. session_id=%s", session_id)
 
 
 if __name__ == "__main__":

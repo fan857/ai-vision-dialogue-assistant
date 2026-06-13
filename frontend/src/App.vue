@@ -241,6 +241,82 @@
         </div>
       </section>
 
+      <!-- 实时语音视觉对话（PR8） -->
+      <section class="realtime-section">
+        <h2>实时语音视觉对话（Qwen3.5-Omni-Flash-Realtime + 豆包视觉）</h2>
+        <p class="realtime-hint">
+          点击「开始实时对话」后，浏览器会持续把麦克风音频通过 WebSocket 发送给后端，
+          阿里云百炼 Qwen 实时识别你的问题。涉及画面时，Qwen 会自动调用豆包视觉工具分析你之前截取的画面。
+          关闭会话立即停止音频上传和图片使用。
+        </p>
+
+        <div class="realtime-status-row">
+          <span class="realtime-status-label">连接状态：</span>
+          <span :class="['realtime-status-pill', `realtime-status-${realtimeStatus}`]">
+            {{ realtimeStatusText }}
+          </span>
+        </div>
+
+        <div class="realtime-controls">
+          <button
+            v-if="realtimeStatus === 'idle' || realtimeStatus === 'ended' || realtimeStatus === 'failed'"
+            class="btn-primary"
+            @click="startRealtimeSession"
+            :disabled="!canStartRealtime"
+          >
+            开始实时对话
+          </button>
+          <button
+            v-if="realtimeStatus !== 'idle' && realtimeStatus !== 'ended' && realtimeStatus !== 'failed'"
+            class="btn-danger"
+            @click="endRealtimeSession"
+          >
+            结束会话
+          </button>
+          <button
+            v-if="realtimeStatus !== 'idle' && realtimeStatus !== 'ended' && realtimeStatus !== 'failed'"
+            class="btn-secondary"
+            @click="stopRealtimePlayback"
+            :disabled="!isRealtimePlaying"
+          >
+            停止当前播放
+          </button>
+        </div>
+
+        <div v-if="!canStartRealtime" class="realtime-warn">
+          实时对话需要先打开摄像头并截取当前画面。摄像头 / 截图未就绪。
+        </div>
+
+        <div v-if="realtimeError" class="realtime-error">
+          {{ realtimeError }}
+        </div>
+
+        <div class="realtime-conversation">
+          <div class="realtime-transcript">
+            <div class="realtime-transcript-label">你说：</div>
+            <div class="realtime-transcript-text">
+              {{ realtimeUserTranscript || '（等待开始说话…）' }}
+            </div>
+          </div>
+          <div class="realtime-answer">
+            <div class="realtime-answer-label">AI 回答：</div>
+            <div class="realtime-answer-text">
+              {{ realtimeAssistantText || '（等待 AI 回答…）' }}
+            </div>
+            <div v-if="isRealtimePlaying" class="realtime-playing-indicator">
+              正在播放
+              <span class="realtime-playing-dot"></span>
+            </div>
+          </div>
+        </div>
+
+        <p class="realtime-cost-hint">
+          AI 回答使用浏览器原生流式播放（PCM 音频），不调用云端 TTS；不向 Qwen 发送图片；
+          只有你点击「开始实时对话」期间才会上传音频；结束会话后立即停止。
+          当实时功能不可用时，仍可使用上方「视觉问答」+「AI 回答语音合成」作为备用方案。
+        </p>
+      </section>
+
       <section class="features">
         <h2>核心功能（开发中）</h2>
         <ul>
@@ -253,6 +329,7 @@
           <li>✅ 视觉识别（已完成 - Doubao-Seed-2.0-Pro）</li>
           <li>✅ AI 回复生成（已完成）</li>
           <li>✅ 语音合成（已完成 - 浏览器原生 SpeechSynthesis）</li>
+          <li>✅ 实时语音视觉对话（已完成 - Qwen3.5-Omni-Flash-Realtime + 豆包视觉）</li>
         </ul>
       </section>
 
@@ -269,6 +346,7 @@
 
 <script setup>
 import { ref, computed, onBeforeUnmount } from 'vue'
+import { PCMStreamPlayer } from './audio/pcm-player.js'
 
 // ===== 图片压缩常量 =====
 const MAX_IMAGE_DIMENSION = 1280
@@ -862,6 +940,397 @@ const stopSpeaking = () => {
   }
 }
 
+// ===== 实时语音视觉对话（PR8） =====
+// 流程：开始会话 -> 把当前压缩截图和 session.init 发到后端 -> 后端连 Qwen Realtime
+// -> 浏览器通过 AudioWorklet 采集 16kHz 16bit mono PCM 并通过 WebSocket 二进制帧上传
+// -> Qwen 实时返回 user 转写 + AI 文本/音频 -> 浏览器用 PCMStreamPlayer 排队播放
+// -> 涉及画面时 Qwen 调用 analyze_current_frame 工具 -> 后端复用 PR6 Doubao 视觉
+const realtimeStatus = ref('idle') // idle, connecting, listening, recognizing, analyzing, answering, playing, ended, failed
+const realtimeError = ref('')
+const realtimeUserTranscript = ref('')
+const realtimeAssistantText = ref('')
+const isRealtimePlaying = ref(false)
+
+const realtimeStatusText = computed(() => {
+  const statusMap = {
+    idle: '未开始',
+    connecting: '正在连接 Qwen Realtime...',
+    listening: '正在聆听，请说话...',
+    recognizing: '正在识别...',
+    analyzing: '正在分析当前画面（豆包视觉）...',
+    answering: '正在回答...',
+    playing: '正在播放 AI 回答',
+    ended: '已结束',
+    failed: '连接失败'
+  }
+  return statusMap[realtimeStatus.value] || ''
+})
+
+// 是否允许开始：需要截图 + AudioWorklet 支持
+const audioWorkletSupported = computed(
+  () => typeof window !== 'undefined' && typeof window.AudioWorklet !== 'undefined'
+)
+const canStartRealtime = computed(
+  () => !!capturedImageBlob.value && audioWorkletSupported.value
+)
+
+// WebSocket / AudioContext / Worklet 节点
+let realtimeWs = null
+let realtimeAudioContext = null
+let realtimeMicStream = null
+let realtimeMicSource = null
+let realtimeWorkletNode = null
+let realtimePlayer = null
+let realtimeHeartbeatTimer = null
+let realtimeIntentionalClose = false
+
+// WebSocket URL
+const getRealtimeWsUrl = () => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  // Vite 开发代理会把 ws 转发到后端
+  return `${proto}://${window.location.host}/ws/realtime-voice`
+}
+
+// 把 Blob 读取为 Base64（用于 session.init）
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result || ''
+      // result 是 "data:image/jpeg;base64,XXXX"
+      const idx = typeof result === 'string' ? result.indexOf(',') : -1
+      if (idx >= 0) {
+        resolve(result.substring(idx + 1))
+      } else {
+        resolve('')
+      }
+    }
+    reader.onerror = () => reject(reader.error || new Error('FileReader error'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+// 拼接用户转写增量
+const appendUserTranscript = (delta) => {
+  if (!delta) return
+  realtimeUserTranscript.value = (realtimeUserTranscript.value || '') + delta
+}
+
+// 拼接 AI 文本增量
+const appendAssistantText = (delta) => {
+  if (!delta) return
+  realtimeAssistantText.value = (realtimeAssistantText.value || '') + delta
+}
+
+// 启动：建立 WS、上传截图、初始化 AudioWorklet + 麦克风
+const startRealtimeSession = async () => {
+  realtimeError.value = ''
+  realtimeUserTranscript.value = ''
+  realtimeAssistantText.value = ''
+
+  if (!capturedImageBlob.value) {
+    realtimeError.value = '请先截取当前摄像头画面。'
+    realtimeStatus.value = 'failed'
+    return
+  }
+  if (!audioWorkletSupported.value) {
+    realtimeError.value = '当前浏览器不支持 AudioWorklet，无法采集麦克风 PCM。'
+    realtimeStatus.value = 'failed'
+    return
+  }
+
+  realtimeStatus.value = 'connecting'
+  realtimeIntentionalClose = false
+
+  // 1) 准备 PCM 播放器
+  try {
+    if (!realtimePlayer) {
+      realtimePlayer = new PCMStreamPlayer()
+      realtimePlayer.onStateChange = (s) => {
+        isRealtimePlaying.value = s
+      }
+    }
+  } catch (e) {
+    realtimeError.value = '初始化音频播放器失败：' + (e && e.message ? e.message : '未知错误')
+    realtimeStatus.value = 'failed'
+    return
+  }
+
+  // 2) 建立 WebSocket
+  let ws
+  try {
+    ws = new WebSocket(getRealtimeWsUrl())
+  } catch (e) {
+    realtimeError.value = '无法创建 WebSocket：' + (e && e.message ? e.message : '未知错误')
+    realtimeStatus.value = 'failed'
+    return
+  }
+  realtimeWs = ws
+  ws.binaryType = 'arraybuffer'
+
+  ws.onopen = async () => {
+    try {
+      const b64 = await blobToBase64(capturedImageBlob.value)
+      ws.send(
+        JSON.stringify({
+          type: 'session.init',
+          image_base64: b64,
+          content_type: capturedImageBlob.value.type || 'image/jpeg'
+        })
+      )
+    } catch (e) {
+      realtimeError.value = '图片编码失败：' + (e && e.message ? e.message : '未知错误')
+      realtimeStatus.value = 'failed'
+      try { ws.close() } catch (err) { /* noop */ }
+    }
+  }
+
+  ws.onmessage = async (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // 下行音频：24kHz 16bit mono PCM
+      try {
+        await realtimePlayer.push(new Uint8Array(event.data))
+      } catch (e) {
+        console.error('PCM push failed:', e)
+      }
+      return
+    }
+    let evt
+    try {
+      evt = JSON.parse(event.data)
+    } catch (e) {
+      return
+    }
+    const t = evt.type
+
+    if (t === 'session.ready') {
+      // 启动麦克风采集
+      try {
+        await startMicCapture()
+        realtimeStatus.value = 'listening'
+      } catch (e) {
+        realtimeError.value = '启动麦克风失败：' + (e && e.message ? e.message : '未知错误')
+        realtimeStatus.value = 'failed'
+        endRealtimeSession()
+      }
+      return
+    }
+
+    if (t === 'session.error') {
+      realtimeError.value = evt.message || '会话启动失败'
+      realtimeStatus.value = 'failed'
+      endRealtimeSession()
+      return
+    }
+
+    if (t === 'server.disconnected') {
+      realtimeStatus.value = 'ended'
+      return
+    }
+
+    if (t === 'server.error') {
+      console.error('Qwen realtime error:', evt.error)
+      // 不立即 fail，让用户可以重试
+      return
+    }
+
+    // 用户转写（Qwen Realtime 事件名）
+    if (
+      t === 'conversation.item.input_audio_transcription.delta' ||
+      t === 'response.input_audio_transcription.delta'
+    ) {
+      realtimeStatus.value = 'recognizing'
+      appendUserTranscript(evt.delta || '')
+      return
+    }
+    if (
+      t === 'conversation.item.input_audio_transcription.completed' ||
+      t === 'conversation.item.input_audio_transcription.done' ||
+      t === 'response.input_audio_transcription.completed' ||
+      t === 'response.input_audio_transcription.done'
+    ) {
+      const transcript = evt.transcript || evt.text || ''
+      if (transcript && !realtimeUserTranscript.value.includes(transcript)) {
+        appendUserTranscript(transcript)
+      }
+      return
+    }
+
+    // AI 文本
+    if (t === 'response.audio_transcript.delta' || t === 'response.text.delta') {
+      realtimeStatus.value = 'answering'
+      appendAssistantText(evt.delta || '')
+      return
+    }
+    if (
+      t === 'response.audio_transcript.done' ||
+      t === 'response.text.done' ||
+      t === 'response.audio_transcript.completed' ||
+      t === 'response.text.completed'
+    ) {
+      // 文本流结束：标记为 playing
+      if (isRealtimePlaying.value) {
+        realtimeStatus.value = 'playing'
+      } else {
+        realtimeStatus.value = 'listening'
+      }
+      return
+    }
+
+    // 工具调用 -> 视觉分析
+    if (t === 'vision.analyzing') {
+      realtimeStatus.value = 'analyzing'
+      return
+    }
+    if (t === 'vision.analyzed') {
+      // 回到 answering
+      realtimeStatus.value = 'answering'
+      return
+    }
+
+    // 工具调用 arguments delta
+    if (t === 'response.function_call_arguments.delta') {
+      // noop（仅供调试）
+      return
+    }
+
+    // 响应结束
+    if (t === 'response.done' || t === 'response.completed') {
+      if (isRealtimePlaying.value) {
+        realtimeStatus.value = 'playing'
+      } else {
+        realtimeStatus.value = 'listening'
+      }
+      return
+    }
+  }
+
+  ws.onerror = (e) => {
+    console.error('Realtime WS error:', e)
+    if (!realtimeIntentionalClose) {
+      realtimeError.value = 'WebSocket 错误，请检查后端是否启动、Key 是否正确。'
+      realtimeStatus.value = 'failed'
+    }
+  }
+
+  ws.onclose = () => {
+    if (realtimeHeartbeatTimer) {
+      clearInterval(realtimeHeartbeatTimer)
+      realtimeHeartbeatTimer = null
+    }
+    if (!realtimeIntentionalClose && realtimeStatus.value !== 'failed') {
+      realtimeStatus.value = 'ended'
+    }
+  }
+}
+
+// 启动麦克风采集
+const startMicCapture = async () => {
+  // 1. 麦克风
+  realtimeMicStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true
+    }
+  })
+
+  // 2. AudioContext
+  const Ctx = window.AudioContext || window.webkitAudioContext
+  realtimeAudioContext = new Ctx()
+
+  // 3. 加载 worklet
+  await realtimeAudioContext.audioWorklet.addModule(
+    new URL('./audio/pcm-worklet.js', import.meta.url).href
+  )
+
+  // 4. 创建节点
+  realtimeMicSource = realtimeAudioContext.createMediaStreamSource(realtimeMicStream)
+  realtimeWorkletNode = new AudioWorkletNode(realtimeAudioContext, 'pcm16k-processor')
+  realtimeWorkletNode.port.onmessage = (e) => {
+    // e.data 是 ArrayBuffer
+    const buf = e.data
+    if (realtimeWs && realtimeWs.readyState === WebSocket.OPEN && buf) {
+      try {
+        realtimeWs.send(buf)
+      } catch (err) {
+        // noop
+      }
+    }
+  }
+  realtimeMicSource.connect(realtimeWorkletNode)
+  // 不需要连接到 destination（否则会回放麦克风）
+}
+
+// 停止当前播放（不结束整个会话）
+const stopRealtimePlayback = () => {
+  if (realtimePlayer) {
+    realtimePlayer.stop()
+  }
+  if (realtimeWs && realtimeWs.readyState === WebSocket.OPEN) {
+    try {
+      realtimeWs.send(JSON.stringify({ type: 'cancel' }))
+    } catch (e) {
+      // noop
+    }
+  }
+  if (realtimeStatus.value === 'playing' || realtimeStatus.value === 'answering') {
+    realtimeStatus.value = 'listening'
+  }
+}
+
+// 结束整个会话
+const endRealtimeSession = () => {
+  realtimeIntentionalClose = true
+
+  // 1) 停止播放
+  if (realtimePlayer) {
+    try { realtimePlayer.stop() } catch (e) { /* noop */ }
+  }
+  isRealtimePlaying.value = false
+
+  // 2) 停止麦克风
+  if (realtimeMicStream) {
+    try {
+      realtimeMicStream.getTracks().forEach((t) => {
+        try { t.stop() } catch (e) { /* noop */ }
+      })
+    } catch (e) {
+      // noop
+    }
+    realtimeMicStream = null
+  }
+  if (realtimeWorkletNode) {
+    try { realtimeWorkletNode.disconnect() } catch (e) { /* noop */ }
+    realtimeWorkletNode = null
+  }
+  if (realtimeMicSource) {
+    try { realtimeMicSource.disconnect() } catch (e) { /* noop */ }
+    realtimeMicSource = null
+  }
+  if (realtimeAudioContext) {
+    try { realtimeAudioContext.close() } catch (e) { /* noop */ }
+    realtimeAudioContext = null
+  }
+
+  // 3) 心跳
+  if (realtimeHeartbeatTimer) {
+    clearInterval(realtimeHeartbeatTimer)
+    realtimeHeartbeatTimer = null
+  }
+
+  // 4) WebSocket
+  if (realtimeWs) {
+    try { realtimeWs.close() } catch (e) { /* noop */ }
+    realtimeWs = null
+  }
+
+  if (realtimeStatus.value !== 'failed') {
+    realtimeStatus.value = 'ended'
+  }
+}
+
 // ===== 生命周期 =====
 onBeforeUnmount(() => {
   if (isCameraActive.value) {
@@ -884,6 +1353,36 @@ onBeforeUnmount(() => {
       // noop
     }
     ttsVoicesListener = null
+  }
+  // PR8 清理：结束实时会话
+  if (realtimeWs) {
+    realtimeIntentionalClose = true
+    try { realtimeWs.close() } catch (e) { /* noop */ }
+    realtimeWs = null
+  }
+  if (realtimeMicStream) {
+    try {
+      realtimeMicStream.getTracks().forEach((t) => {
+        try { t.stop() } catch (e) { /* noop */ }
+      })
+    } catch (e) { /* noop */ }
+    realtimeMicStream = null
+  }
+  if (realtimeWorkletNode) {
+    try { realtimeWorkletNode.disconnect() } catch (e) { /* noop */ }
+    realtimeWorkletNode = null
+  }
+  if (realtimeMicSource) {
+    try { realtimeMicSource.disconnect() } catch (e) { /* noop */ }
+    realtimeMicSource = null
+  }
+  if (realtimeAudioContext) {
+    try { realtimeAudioContext.close() } catch (e) { /* noop */ }
+    realtimeAudioContext = null
+  }
+  if (realtimePlayer) {
+    try { realtimePlayer.close() } catch (e) { /* noop */ }
+    realtimePlayer = null
   }
 })
 </script>
@@ -1541,5 +2040,191 @@ code {
   .camera-container {
     max-width: 100%;
   }
+}
+
+/* ===== PR8 实时语音视觉对话样式 ===== */
+.realtime-section {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  margin: 1rem 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.realtime-hint {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1.55;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.realtime-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.6rem 0 0.8rem;
+  flex-wrap: wrap;
+}
+
+.realtime-status-label {
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.realtime-status-pill {
+  display: inline-block;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.12);
+  color: #e6f1ff;
+  transition: background 0.2s ease;
+}
+
+.realtime-status-connecting {
+  background: rgba(255, 193, 7, 0.45);
+  color: #fff;
+}
+
+.realtime-status-listening {
+  background: rgba(78, 205, 196, 0.45);
+  color: #fff;
+}
+
+.realtime-status-recognizing {
+  background: rgba(78, 205, 196, 0.55);
+  color: #fff;
+}
+
+.realtime-status-analyzing {
+  background: rgba(186, 104, 200, 0.55);
+  color: #fff;
+}
+
+.realtime-status-answering {
+  background: rgba(116, 185, 255, 0.55);
+  color: #fff;
+}
+
+.realtime-status-playing {
+  background: rgba(78, 205, 196, 0.6);
+  color: #fff;
+}
+
+.realtime-status-failed {
+  background: rgba(244, 67, 54, 0.55);
+  color: #fff;
+}
+
+.realtime-status-ended {
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.realtime-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0.4rem 0 0.7rem;
+}
+
+.realtime-warn,
+.realtime-error {
+  font-size: 0.9rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: 6px;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.realtime-warn {
+  background: rgba(255, 193, 7, 0.18);
+  border-left: 3px solid rgba(255, 193, 7, 0.8);
+  color: #ffe8a1;
+}
+
+.realtime-error {
+  background: rgba(244, 67, 54, 0.18);
+  border-left: 3px solid rgba(244, 67, 54, 0.85);
+  color: #ffcdd2;
+}
+
+.realtime-conversation {
+  margin-top: 0.8rem;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+}
+
+.realtime-transcript,
+.realtime-answer {
+  margin: 0.4rem 0;
+}
+
+.realtime-transcript-label,
+.realtime-answer-label {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 0.25rem;
+}
+
+.realtime-transcript-text,
+.realtime-answer-text {
+  font-size: 0.98rem;
+  line-height: 1.5;
+  color: #fff;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 1.4em;
+}
+
+.realtime-playing-indicator {
+  margin-top: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #4ecdc4;
+}
+
+.realtime-playing-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  background: #4ecdc4;
+  border-radius: 50%;
+  animation: realtime-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes realtime-dot-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.realtime-cost-hint {
+  margin-top: 0.7rem;
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.5;
+}
+
+.btn-danger {
+  background: rgba(244, 67, 54, 0.85);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.btn-danger:hover {
+  background: rgba(244, 67, 54, 1);
+}
+
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 </style>
