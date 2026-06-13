@@ -31,7 +31,8 @@
 │   ├── pr-4.md             # PR4 文档
 │   ├── pr-5.md             # PR5 文档
 │   ├── pr-6.md             # PR6 文档
-│   └── pr-7.md             # PR7 文档
+│   ├── pr-7.md             # PR7 文档
+│   └── pr-8.md             # PR8 文档
 └── README.md               # 项目说明
 ```
 
@@ -99,6 +100,23 @@
 ✅ 成功后顶部提示："AI 已完成视觉分析"  
 ⚠️ 当前不实现多轮对话、上下文记忆、AI 语音朗读
 
+### PR8 - 实时语音视觉对话（Qwen3.5-Omni-Flash-Realtime + 豆包视觉）
+
+✅ 引入阿里云百炼 `qwen3.5-omni-flash-realtime` 实现**对着 AI 说话**的实时对话
+✅ 后端 `WS /ws/realtime-voice`：连接 DashScope Realtime，转发 PCM 音频，处理 Function Calling
+✅ 前端 **AudioWorklet** 采集 16kHz/16bit/mono PCM，WebSocket **二进制帧**直发（不走 base64）
+✅ 前端自实现 **PCM Stream Player**：24kHz 音频分片按顺序排队播放，无重叠，单 AudioContext 复用
+✅ Function Calling：注册 `analyze_current_frame` 工具，**复用 PR6 豆包视觉服务**分析摄像头截图
+✅ **图片只发给豆包一次**，**不向 Qwen 发送图片**，避免重复视觉 token
+✅ 音频：输入 pcm16/16kHz、输出 pcm16/24kHz、声音 Tina、可在 `QWEN_REALTIME_VOICE` 覆盖
+✅ 状态机：未开始 / 正在连接 / 聆听 / 识别 / 分析画面 / 回答 / 播放 / 已结束 / 失败
+✅ 控件：开始实时对话 / 结束会话 / 停止当前播放；停止播放会向后端发 `cancel` 取消当前响应
+✅ 生命周期：`onBeforeUnmount` 中关闭 WebSocket、停止麦克风、断开 worklet、关闭 AudioContext
+✅ 实时失败时**不影响** PR5/PR6/PR7 文字路径；**PR7 浏览器 TTS 仍保留为备用朗读方案**
+⚠️ 需要 `backend/.env` 中配置 `DASHSCOPE_API_KEY`
+⚠️ 端到端真实测试需要用户本地用真实 DashScope Key 完成（沙箱无 Key 无外网）
+⚠️ 当前不实现多会话历史、打断恢复续说、音色选择 UI
+
 ### PR7 - AI 回答语音合成与朗读
 
 ✅ 使用浏览器原生 `window.speechSynthesis` + `SpeechSynthesisUtterance`，**不接入云端 TTS**  
@@ -137,11 +155,12 @@ uvicorn main:app --reload --port 3001
 
 ## 后续计划
 
-MVP 链路已完成（PR1 → PR7）。后续如需继续迭代，可考虑：
+MVP 链路已完成（PR1 → PR8）。后续如需继续迭代，可考虑：
 
 - 设计文档 `DESIGN.md`：汇总用户故事、端云协同、成本控制、用户故事完成情况
 - 多轮对话 / 上下文记忆（复用最近一次视觉摘要）
 - 朗读历史 / 朗读速度 / 音调持久化
+- 实时对话打断恢复 + 音色选择 UI
 - 错误时引导重试 + AbortController 取消正在进行的模型请求
 
 ⚠️ MVP 范围内不引入登录注册、数据库、后台管理系统等与题目无关的能力。
