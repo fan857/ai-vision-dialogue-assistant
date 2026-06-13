@@ -281,34 +281,33 @@ async def ws_realtime_voice(websocket: WebSocket):
                     continue
 
                 if ptype == "session.init":
-                    # 解析图片
+                    # PR11: image_base64 改为可选 —— 启动实时对话时不再强制要求先有画面。
+                    # 后续用户提问触发"需要画面"判定后，前端会通过 session.update_image 补图。
                     b64 = (payload.get("image_base64") or "").strip()
                     ct = (payload.get("content_type") or "").lower().strip()
-                    if not b64:
-                        await forward_event(
-                            {"type": "session.error", "message": "缺少 image_base64"}
-                        )
-                        continue
-                    if not ct or ct not in REALTIME_ALLOWED_IMAGE_TYPES:
+                    frame_bytes: bytes = b""
+                    if b64:
+                        if not ct or ct not in REALTIME_ALLOWED_IMAGE_TYPES:
+                            ct = REALTIME_DEFAULT_CONTENT_TYPE
+                        try:
+                            frame_bytes = base64.b64decode(b64, validate=True)
+                        except Exception:
+                            await forward_event(
+                                {"type": "session.error", "message": "image_base64 无法解析"}
+                            )
+                            continue
+                        if not frame_bytes:
+                            await forward_event(
+                                {"type": "session.error", "message": "图片内容为空"}
+                            )
+                            continue
+                        if len(frame_bytes) > REALTIME_MAX_IMAGE_SIZE_BYTES:
+                            await forward_event(
+                                {"type": "session.error", "message": "图片超过 2 MB"}
+                            )
+                            continue
+                    else:
                         ct = REALTIME_DEFAULT_CONTENT_TYPE
-                    try:
-                        frame_bytes = base64.b64decode(b64, validate=True)
-                    except Exception:  # noqa: BLE001
-                        await forward_event(
-                            {"type": "session.error", "message": "image_base64 无法解析"}
-                        )
-                        continue
-                    if not frame_bytes:
-                        await forward_event(
-                            {"type": "session.error", "message": "图片内容为空"}
-                        )
-                        continue
-                    if len(frame_bytes) > REALTIME_MAX_IMAGE_SIZE_BYTES:
-                        await forward_event(
-                            {"type": "session.error", "message": "图片超过 2 MB"}
-                        )
-                        continue
-                    content_type = ct
 
                     # 建立到 Qwen 的会话
                     try:
@@ -317,8 +316,8 @@ async def ws_realtime_voice(websocket: WebSocket):
                             on_audio_delta=forward_audio,
                         )
                         await qwen_session.open(
-                            frame_bytes=frame_bytes,
-                            content_type=content_type,
+                            frame_bytes=frame_bytes or None,
+                            content_type=ct,
                         )
                         initialized = True
                         await forward_event({"type": "session.ready"})
@@ -339,6 +338,48 @@ async def ws_realtime_voice(websocket: WebSocket):
                                 "type": "session.error",
                                 "message": f"实时会话启动失败：{type(e).__name__}",
                             }
+                        )
+                    continue
+
+                if ptype == "session.update_image":
+                    # PR11: 前端在用户开口说话时实时更新画面
+                    if qwen_session is None:
+                        await forward_event(
+                            {"type": "session.error", "message": "会话尚未初始化，无法更新画面。"}
+                        )
+                        continue
+                    b64 = (payload.get("image_base64") or "").strip()
+                    ct = (payload.get("content_type") or "").lower().strip()
+                    if not b64:
+                        await forward_event(
+                            {"type": "session.error", "message": "更新画面缺少 image_base64。"}
+                        )
+                        continue
+                    if not ct or ct not in REALTIME_ALLOWED_IMAGE_TYPES:
+                        ct = REALTIME_DEFAULT_CONTENT_TYPE
+                    try:
+                        frame_bytes = base64.b64decode(b64, validate=True)
+                    except Exception:
+                        await forward_event(
+                            {"type": "session.error", "message": "image_base64 无法解析"}
+                        )
+                        continue
+                    if not frame_bytes:
+                        await forward_event(
+                            {"type": "session.error", "message": "图片内容为空"}
+                        )
+                        continue
+                    if len(frame_bytes) > REALTIME_MAX_IMAGE_SIZE_BYTES:
+                        await forward_event(
+                            {"type": "session.error", "message": "图片超过 2 MB"}
+                        )
+                        continue
+                    try:
+                        qwen_session.update_frame(frame_bytes, ct)
+                        await forward_event({"type": "session.image_updated"})
+                    except QwenRealtimeError as e:
+                        await forward_event(
+                            {"type": "session.error", "message": e.message}
                         )
                     continue
 

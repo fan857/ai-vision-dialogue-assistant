@@ -32,14 +32,15 @@ def test_routes_registered():
     assert "/api/vision-dialogue" in routes
 
 
-def test_ws_rejects_no_image():
-    """没有 image_base64 应立即返回 session.error。"""
+def test_ws_init_without_image_succeeds():
+    """PR11: 没有 image_base64 也能 init 成功 —— 启动实时对话不再强制要求先有画面。
+    后续用户提问命中视觉关键词时再通过 session.update_image 补图。
+    """
     client = TestClient(app)
     with client.websocket_connect("/ws/realtime-voice") as ws:
         ws.send_json({"type": "session.init"})
         evt = ws.receive_json()
-        assert evt["type"] == "session.error"
-        assert "image" in evt["message"]
+        assert evt["type"] == "session.ready"
 
 
 def test_ws_rejects_invalid_base64():

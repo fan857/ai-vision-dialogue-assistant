@@ -148,7 +148,11 @@ class QwenRealtimeSession:
         self._pending_assistant_text: Dict[str, str] = {}
 
     # ===== 公开方法 =====
-    async def open(self, frame_bytes: bytes, content_type: str) -> None:
+    async def open(
+        self,
+        frame_bytes: Optional[bytes] = None,
+        content_type: str = "image/jpeg",
+    ) -> None:
         cfg = _get_config()
         if not cfg["api_key"]:
             raise QwenRealtimeError(
@@ -156,19 +160,16 @@ class QwenRealtimeSession:
                 error_type="config_error",
             )
 
-        if not frame_bytes:
-            raise QwenRealtimeError(
-                "当前没有可用画面，请先打开摄像头并截取当前画面。",
-                error_type="no_frame",
-            )
-        if len(frame_bytes) > 2 * 1024 * 1024:
+        # PR11: 允许初始没有画面（frame_bytes 为 None/空）。
+        # 后续用户提问触发"需要画面"判定后，前端会通过 session.update_image 补图。
+        if frame_bytes and len(frame_bytes) > 2 * 1024 * 1024:
             raise QwenRealtimeError(
                 "图片超过 2 MB，无法用于实时视觉问答。",
                 error_type="frame_too_large",
             )
 
         # 把图片和 content_type 保存在闭包中，工具调用时使用
-        self._frame_bytes = frame_bytes
+        self._frame_bytes = frame_bytes or b""
         self._content_type = (content_type or "image/jpeg").lower()
 
         url = f"{cfg['url']}?model={cfg['model']}"
@@ -210,6 +211,20 @@ class QwenRealtimeSession:
                 "audio": b64,
             }
         )
+
+    def update_frame(self, frame_bytes: bytes, content_type: str = "image/jpeg") -> None:
+        """更新内存中的当前画面（供 analyze_current_frame 工具使用）。
+
+        先释放旧图再赋值新图，避免内存泄漏。
+        """
+        if len(frame_bytes) > 2 * 1024 * 1024:
+            raise QwenRealtimeError(
+                "图片超过 2 MB，无法用于实时视觉问答。",
+                error_type="frame_too_large",
+            )
+        self._frame_bytes = b""
+        self._frame_bytes = frame_bytes
+        self._content_type = (content_type or "image/jpeg").lower()
 
     async def send_response_cancel(self) -> None:
         """取消当前正在生成的响应。"""
@@ -367,42 +382,50 @@ class QwenRealtimeSession:
             except Exception:  # noqa: BLE001
                 args = {}
             question = (args.get("question") or "").strip()
+            # PR11: question 为空时不再返回错误，改用通用兜底 prompt 调 Doubao。
+            # Qwen Realtime 有时不传 question，但我们仍要拿到画面描述。
             if not question:
-                output = "工具调用缺少 question 参数。"
-            else:
-                # 通知前端：开始分析画面
-                try:
-                    await self._on_event(
-                        {
-                            "type": "vision.analyzing",
-                            "question": question,
-                        }
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-                # 调用统一视觉服务（PR9，带缓存/去重/耗时）
-                try:
-                    service = get_vision_service()
-                    result = await service.analyze(
-                        question=question,
-                        image_bytes=self._frame_bytes,
-                        content_type=self._content_type,
-                        request_id=item_id,
-                    )
-                    output = result.get("answer") or "豆包视觉服务未返回内容。"
-                    cache_hit = bool((result.get("cache") or {}).get("hit"))
-                    source = (result.get("cache") or {}).get("source") or "model"
-                    timing = result.get("timing") or {}
-                except VisionModelError as e:
-                    output = f"视觉服务调用失败：{e.message}"
-                    cache_hit = False
-                    source = "model"
-                    timing = {}
-                except Exception as e:  # noqa: BLE001
-                    output = f"视觉服务异常：{type(e).__name__}"
-                    cache_hit = False
-                    source = "model"
-                    timing = {}
+                question = "请详细描述这张图片中所有可见的内容，包括人物、物体、文字、颜色、动作和场景。"
+            # 包装成结构化 prompt，强制 Doubao 针对图片+问题回答
+            full_prompt = (
+                "[系统提示] 这是一张来自用户摄像头的实时画面截图。"
+                "请结合图片内容直接、明确地回答用户问题。"
+                "用户问题："
+                + question
+            )
+            # 通知前端：开始分析画面
+            try:
+                await self._on_event(
+                    {
+                        "type": "vision.analyzing",
+                        "question": question,
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            # 调用统一视觉服务（PR9，带缓存/去重/耗时）
+            try:
+                service = get_vision_service()
+                result = await service.analyze(
+                    question=full_prompt,
+                    image_bytes=self._frame_bytes,
+                    content_type=self._content_type,
+                    request_id=item_id,
+                )
+                output = result.get("answer") or "豆包视觉服务未返回内容。"
+                cache_hit = bool((result.get("cache") or {}).get("hit"))
+                source = (result.get("cache") or {}).get("source") or "model"
+                timing = result.get("timing") or {}
+            except VisionModelError as e:
+                output = f"视觉服务调用失败：{e.message}"
+                cache_hit = False
+                source = "model"
+                timing = {}
+            except Exception as e:  # noqa: BLE001
+                output = f"视觉服务异常：{type(e).__name__}"
+                cache_hit = False
+                source = "model"
+                timing = {}
 
         # 通知前端：分析完成
         try:

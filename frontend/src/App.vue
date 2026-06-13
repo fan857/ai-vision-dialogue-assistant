@@ -43,228 +43,12 @@
         </div>
       </section>
 
-      <!-- 摄像头截图与压缩区域 -->
-      <section class="capture-section">
-        <h2>摄像头截图与压缩</h2>
-        <p class="capture-privacy-hint">
-          摄像头视频不会持续上传。只有用户主动截图时，页面才会处理当前画面，并在上传前进行压缩。
-        </p>
-        <div class="capture-status" :class="`capture-status-${captureStatus}`">
-          {{ captureStatusText }}
-        </div>
-        <div class="capture-controls">
-          <button
-            class="btn-primary"
-            @click="captureCurrentFrame"
-            :disabled="!isCameraActive || captureStatus === 'capturing'"
-          >
-            截取当前画面
-          </button>
-          <button
-            class="btn-secondary"
-            @click="clearCapturedImage"
-            :disabled="!capturedImageBlob && !capturedImagePreviewUrl"
-          >
-            清除截图
-          </button>
-        </div>
-        <div v-if="!isCameraActive" class="capture-warning">
-          请先打开摄像头，再进行截图。
-        </div>
-        <div v-if="captureError" class="capture-error">
-          {{ captureError }}
-        </div>
-        <div v-if="capturedImagePreviewUrl" class="capture-preview">
-          <h3>截图预览</h3>
-          <img
-            :src="capturedImagePreviewUrl"
-            alt="摄像头截图"
-            class="capture-preview-image"
-          />
-          <div v-if="capturedImageMetadata" class="capture-metadata">
-            <div class="capture-meta-row">
-              <span class="capture-meta-label">原始尺寸：</span>
-              <span>{{ capturedImageMetadata.originalWidth }} × {{ capturedImageMetadata.originalHeight }} px</span>
-            </div>
-            <div class="capture-meta-row">
-              <span class="capture-meta-label">压缩后尺寸：</span>
-              <span>{{ capturedImageMetadata.compressedWidth }} × {{ capturedImageMetadata.compressedHeight }} px</span>
-            </div>
-            <div class="capture-meta-row">
-              <span class="capture-meta-label">文件大小：</span>
-              <span>{{ formatFileSize(capturedImageMetadata.compressedSize) }}</span>
-            </div>
-            <div class="capture-meta-row">
-              <span class="capture-meta-label">图片类型：</span>
-              <span>{{ capturedImageMetadata.mimeType }}</span>
-            </div>
-            <div class="capture-meta-row">
-              <span class="capture-meta-label">截图时间：</span>
-              <span>{{ capturedImageMetadata.capturedAt }}</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 麦克风语音识别区域 -->
-      <section class="voice-section">
-        <h2>麦克风语音识别</h2>
-        <p class="voice-hint">
-          浏览器将使用 Web Speech API 进行中文语音识别，识别结果会显示在下方。
-        </p>
-        <div class="voice-status" :class="`voice-status-${speechStatus}`">
-          状态：{{ speechStatusText }}
-        </div>
-        <div class="voice-controls">
-          <button
-            class="btn-primary"
-            @click="startSpeechRecognition"
-            :disabled="!speechSupported || speechStatus === 'requesting' || speechStatus === 'recognizing'"
-          >
-            开始语音识别
-          </button>
-          <button
-            class="btn-secondary"
-            @click="stopSpeechRecognition"
-            :disabled="speechStatus !== 'recognizing' && speechStatus !== 'requesting'"
-          >
-            停止识别
-          </button>
-        </div>
-        <div v-if="speechError" class="voice-error">
-          {{ speechError }}
-        </div>
-        <div class="voice-result">
-          <h3>识别到的问题</h3>
-          <div class="voice-result-text">
-            {{ userQuestionText || '（暂无识别结果）' }}
-          </div>
-        </div>
-        <div class="voice-fallback">
-          <h3>手动输入（fallback）</h3>
-          <p class="voice-fallback-hint">
-            如果浏览器不支持语音识别或识别失败，可以手动输入问题文本。
-          </p>
-          <textarea
-            v-model="userQuestionText"
-            class="voice-textarea"
-            rows="3"
-            placeholder="请输入你想问 AI 的问题..."
-          ></textarea>
-        </div>
-      </section>
-
-      <!-- 视觉对话请求提交区域 -->
-      <section class="dialogue-section">
-        <h2>视觉对话请求</h2>
-        <p class="dialogue-privacy-hint">
-          图片仅在用户主动提交时发送到后端。后端会调用火山方舟 Coding Plan Doubao-Seed-2.0-Pro 视觉模型，并将真实回答返回。
-        </p>
-        <div class="dialogue-status" :class="`dialogue-status-${dialogueStatus}`">
-          {{ dialogueStatusText }}
-        </div>
-        <div class="dialogue-controls">
-          <button
-            class="btn-primary"
-            @click="submitVisualQuestion"
-            :disabled="dialogueStatus === 'submitting' || !capturedImageBlob"
-          >
-            提交视觉问题
-          </button>
-        </div>
-        <div v-if="dialogueStatus === 'submitting'" class="dialogue-info">
-          AI 正在分析当前画面……
-        </div>
-        <div v-if="dialogueError" class="dialogue-error">
-          {{ dialogueError }}
-        </div>
-        <div v-if="dialogueResult" class="dialogue-result">
-          <div v-if="dialogueResult.status === 'success'" class="dialogue-result-notice success">
-            AI 已完成视觉分析
-          </div>
-          <div v-if="dialogueResult.answer" class="dialogue-answer">
-            <h3>AI 视觉回答</h3>
-            <div class="dialogue-answer-text">{{ dialogueResult.answer }}</div>
-            <div class="dialogue-speech-controls">
-              <div class="dialogue-speech-status" :class="`dialogue-speech-status-${ttsStatus}`">
-                语音状态：{{ ttsStatusText }}
-              </div>
-              <div class="dialogue-speech-buttons">
-                <button
-                  class="btn-primary btn-small"
-                  @click="speakCurrentAnswer"
-                  :disabled="!speechSynthesisSupported || !dialogueResult.answer || isSpeaking"
-                >
-                  朗读回答
-                </button>
-                <button
-                  class="btn-secondary btn-small"
-                  @click="stopSpeaking"
-                  :disabled="!isSpeaking"
-                >
-                  停止朗读
-                </button>
-                <label class="dialogue-speech-toggle">
-                  <input
-                    type="checkbox"
-                    v-model="autoSpeakEnabled"
-                  />
-                  <span>自动朗读 AI 回答</span>
-                </label>
-              </div>
-              <div v-if="!speechSynthesisSupported" class="dialogue-speech-warn">
-                当前浏览器不支持语音合成，请使用最新版 Chrome 或 Edge。
-              </div>
-              <div v-if="ttsError" class="dialogue-speech-error">
-                {{ ttsError }}
-              </div>
-            </div>
-          </div>
-          <div v-if="dialogueResult.model" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">模型：</span>
-            <span>{{ dialogueResult.model }}</span>
-          </div>
-          <div v-if="dialogueResult.request_id" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">request_id：</span>
-            <span>{{ dialogueResult.request_id }}</span>
-          </div>
-          <div v-if="dialogueResult.image" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">图片大小：</span>
-            <span>{{ formatFileSize(dialogueResult.image.size_bytes) }}</span>
-          </div>
-          <div v-if="dialogueResult.usage" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">Token 使用：</span>
-            <span>
-              提示 {{ dialogueResult.usage.prompt_tokens }} / 完成 {{ dialogueResult.usage.completion_tokens }} / 合计 {{ dialogueResult.usage.total_tokens }}
-            </span>
-          </div>
-          <div v-if="dialogueResult.cache" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">结果来源：</span>
-            <span v-if="dialogueResult.cache.hit">
-              <span v-if="dialogueResult.cache.source === 'inflight'">并发复用（其他请求刚分析完）</span>
-              <span v-else>短期缓存（{{ dialogueResult.cache.source === 'memory' ? '内存' : dialogueResult.cache.source }}）</span>
-            </span>
-            <span v-else>Doubao 实时分析</span>
-          </div>
-          <div v-if="dialogueResult.timing" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">总耗时：</span>
-            <span>{{ formatDuration(dialogueResult.timing.total_ms) }}</span>
-            <span v-if="!dialogueResult.cache.hit" class="dialogue-meta-sub">
-              （模型 {{ formatDuration(dialogueResult.timing.model_request_ms) }}）
-            </span>
-            <span v-if="dialogueResult.cache.hit" class="dialogue-meta-sub">
-              （本次未重复调用视觉模型）
-            </span>
-          </div>
-        </div>
-      </section>
-
       <!-- 实时语音视觉对话（PR8） -->
       <section class="realtime-section">
         <h2>实时语音视觉对话（Qwen3.5-Omni-Flash-Realtime + 豆包视觉）</h2>
         <p class="realtime-hint">
           点击「开始实时对话」后，浏览器会持续把麦克风音频通过 WebSocket 发送给后端，
-          阿里云百炼 Qwen 实时识别你的问题。涉及画面时，Qwen 会自动调用豆包视觉工具分析你之前截取的画面。
+          阿里云百炼 Qwen 实时识别你的问题。涉及画面时，Qwen 会自动调用豆包视觉工具分析当前画面。
           关闭会话立即停止音频上传和图片使用。
         </p>
 
@@ -306,7 +90,7 @@
         </div>
 
         <div v-if="!canStartRealtime" class="realtime-warn">
-          实时对话需要先打开摄像头并截取当前画面。摄像头 / 截图未就绪。
+          实时对话需要先打开摄像头（AudioWorklet 浏览器需支持）。摄像头未开启或浏览器不支持。
         </div>
 
         <div v-if="realtimeError" class="realtime-error">
@@ -314,6 +98,14 @@
         </div>
 
         <div class="realtime-conversation">
+          <div v-if="realtimeCurrentFrameUrl" class="realtime-frame">
+            <div class="realtime-frame-label">当前已截取画面（已发送给 AI）：</div>
+            <img
+              :src="realtimeCurrentFrameUrl"
+              class="realtime-frame-image"
+              alt="当前已截取并发送给 AI 的画面"
+            >
+          </div>
           <div class="realtime-transcript">
             <div class="realtime-transcript-label">你说：</div>
             <div class="realtime-transcript-text">
@@ -367,12 +159,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { PCMStreamPlayer } from './audio/pcm-player.js'
 
 // ===== 图片压缩常量 =====
-const MAX_IMAGE_DIMENSION = 1280
-const JPEG_QUALITY = 0.75
+const MAX_IMAGE_DIMENSION = 1920
+const JPEG_QUALITY = 0.92
 const COMPRESSED_MIME_TYPE = 'image/jpeg'
 
 // ===== 摄像头相关状态 =====
@@ -396,8 +188,6 @@ let mediaStream = null
 const captureStatus = ref('idle') // idle, capturing, completed, failed
 const captureError = ref('')
 const capturedImageBlob = ref(null)
-const capturedImagePreviewUrl = ref('')
-const capturedImageMetadata = ref(null)
 
 const captureStatusText = computed(() => {
   const statusMap = {
@@ -424,17 +214,17 @@ const formatDuration = (ms) => {
   return `${(ms / 1000).toFixed(2)} 秒`
 }
 
-// 工具：释放旧 Object URL，避免内存泄漏
-const revokePreviewUrl = () => {
-  if (capturedImagePreviewUrl.value) {
-    try {
-      URL.revokeObjectURL(capturedImagePreviewUrl.value)
-    } catch (e) {
-      console.error('Failed to revoke object URL:', e)
-    }
-    capturedImagePreviewUrl.value = ''
+// PR11: 实时对话区显示当前已截取画面（可视化确认传给后端的是哪一帧）
+const realtimeCurrentFrameUrl = ref('')
+watch(capturedImageBlob, (newBlob) => {
+  if (realtimeCurrentFrameUrl.value) {
+    URL.revokeObjectURL(realtimeCurrentFrameUrl.value)
+    realtimeCurrentFrameUrl.value = ''
   }
-}
+  if (newBlob) {
+    realtimeCurrentFrameUrl.value = URL.createObjectURL(newBlob)
+  }
+})
 
 // ===== 语音识别相关状态 =====
 const speechStatus = ref('idle') // idle, requesting, recognizing, completed, failed, unsupported
@@ -571,36 +361,14 @@ const captureCurrentFrame = async () => {
       )
     })
 
-    // 释放旧预览 URL，避免内存泄漏
-    revokePreviewUrl()
-
-    const previewUrl = URL.createObjectURL(blob)
-
+    // PR11: 不再生成预览图与元数据；只保存 Blob 供后续提交 / 实时对话复用
     capturedImageBlob.value = blob
-    capturedImagePreviewUrl.value = previewUrl
-    capturedImageMetadata.value = {
-      originalWidth,
-      originalHeight,
-      compressedWidth: targetWidth,
-      compressedHeight: targetHeight,
-      compressedSize: blob.size,
-      mimeType: blob.type || COMPRESSED_MIME_TYPE,
-      capturedAt: new Date().toLocaleString('zh-CN')
-    }
     captureStatus.value = 'completed'
   } catch (error) {
     console.error('Capture failed:', error)
     captureError.value = '截图失败：' + (error && error.message ? error.message : '未知错误')
     captureStatus.value = 'failed'
   }
-}
-
-const clearCapturedImage = () => {
-  revokePreviewUrl()
-  capturedImageBlob.value = null
-  capturedImageMetadata.value = null
-  captureError.value = ''
-  captureStatus.value = 'idle'
 }
 
 // ===== 视觉对话请求相关状态 =====
@@ -648,7 +416,7 @@ const submitVisualQuestion = async () => {
     const formData = new FormData()
     formData.append('question', questionClean)
     // 给 Blob 起一个文件名，方便后端使用
-    const filename = `snapshot.${capturedImageMetadata.value?.mimeType === 'image/png' ? 'png' : 'jpg'}`
+    const filename = `snapshot.${capturedImageBlob.value?.type === 'image/png' ? 'png' : 'jpg'}`
     formData.append('image', capturedImageBlob.value, filename)
 
     const response = await fetch('/api/vision-dialogue', {
@@ -996,12 +764,12 @@ const realtimeStatusText = computed(() => {
   return statusMap[realtimeStatus.value] || ''
 })
 
-// 是否允许开始：需要截图 + AudioWorklet 支持
+// 是否允许开始：需要打开摄像头 + AudioWorklet 支持
 const audioWorkletSupported = computed(
   () => typeof window !== 'undefined' && typeof window.AudioWorklet !== 'undefined'
 )
 const canStartRealtime = computed(
-  () => !!capturedImageBlob.value && audioWorkletSupported.value
+  () => isCameraActive.value && audioWorkletSupported.value
 )
 
 // WebSocket / AudioContext / Worklet 节点
@@ -1052,17 +820,50 @@ const appendAssistantText = (delta) => {
   realtimeAssistantText.value = (realtimeAssistantText.value || '') + delta
 }
 
-// 启动：建立 WS、上传截图、初始化 AudioWorklet + 麦克风
+// PR11: 节流标记 —— 用户开口时立即截一帧并发给后端，保证 Qwen 调用视觉工具时图必到。
+// 一句话内重复触发会被节流（避免短时间内发多张图），下一句重新允许。
+let realtimeFrameInFlight = false
+
+// 截图并发图：把当前帧发给后端（只发一次，不轮询）
+const captureAndSendFrame = async (reason) => {
+  if (realtimeFrameInFlight) return
+  if (!isCameraActive.value) return
+  if (!realtimeWs || realtimeWs.readyState !== 1) return
+  realtimeFrameInFlight = true
+  try {
+    await captureCurrentFrame()
+  } catch (e) {
+    realtimeError.value = '自动截取画面失败：' + (e && e.message ? e.message : '未知错误')
+    realtimeFrameInFlight = false
+    return
+  }
+  if (!capturedImageBlob.value) {
+    realtimeFrameInFlight = false
+    return
+  }
+  try {
+    const b64 = await blobToBase64(capturedImageBlob.value)
+    realtimeWs.send(
+      JSON.stringify({
+        type: 'session.update_image',
+        image_base64: b64,
+        content_type: capturedImageBlob.value.type || 'image/jpeg'
+      })
+    )
+  } catch (e) {
+    console.error('send session.update_image failed:', e)
+  } finally {
+    // 给后端一点时间处理，避免极端情况下同一句话里发多张
+    setTimeout(() => { realtimeFrameInFlight = false }, 400)
+  }
+}
+
+// 启动：建立 WS、初始化 AudioWorklet + 麦克风（不预截图，等用户提问再按需截）
 const startRealtimeSession = async () => {
   realtimeError.value = ''
   realtimeUserTranscript.value = ''
   realtimeAssistantText.value = ''
 
-  if (!capturedImageBlob.value) {
-    realtimeError.value = '请先截取当前摄像头画面。'
-    realtimeStatus.value = 'failed'
-    return
-  }
   if (!audioWorkletSupported.value) {
     realtimeError.value = '当前浏览器不支持 AudioWorklet，无法采集麦克风 PCM。'
     realtimeStatus.value = 'failed'
@@ -1098,18 +899,13 @@ const startRealtimeSession = async () => {
   realtimeWs = ws
   ws.binaryType = 'arraybuffer'
 
-  ws.onopen = async () => {
+  ws.onopen = () => {
+    // PR11: 启动时不预截图，session.init 不带 image_base64。
+    // 用户问完一个问题后，若命中视觉关键词再发 session.update_image 补图。
     try {
-      const b64 = await blobToBase64(capturedImageBlob.value)
-      ws.send(
-        JSON.stringify({
-          type: 'session.init',
-          image_base64: b64,
-          content_type: capturedImageBlob.value.type || 'image/jpeg'
-        })
-      )
+      ws.send(JSON.stringify({ type: 'session.init' }))
     } catch (e) {
-      realtimeError.value = '图片编码失败：' + (e && e.message ? e.message : '未知错误')
+      realtimeError.value = '发送 session.init 失败：' + (e && e.message ? e.message : '未知错误')
       realtimeStatus.value = 'failed'
       try { ws.close() } catch (err) { /* noop */ }
     }
@@ -1171,6 +967,8 @@ const startRealtimeSession = async () => {
     ) {
       realtimeStatus.value = 'recognizing'
       appendUserTranscript(evt.delta || '')
+      // PR11: 用户开口就立即截一帧并发给后端 —— 在 Qwen 调用视觉工具前保证图必到
+      captureAndSendFrame('delta')
       return
     }
     if (
@@ -1387,11 +1185,14 @@ onBeforeUnmount(() => {
   if (isCameraActive.value) {
     stopCamera()
   }
+  // PR11: 释放当前画面 blob URL
+  if (realtimeCurrentFrameUrl.value) {
+    try { URL.revokeObjectURL(realtimeCurrentFrameUrl.value) } catch (e) { /* noop */ }
+    realtimeCurrentFrameUrl.value = ''
+  }
   if (recognition) {
     try { recognition.abort() } catch (e) { /* noop */ }
   }
-  // 释放截图预览 URL，避免内存泄漏
-  revokePreviewUrl()
   // 停止任何正在播放的语音
   if (speechSynthesisSupported.value) {
     try { window.speechSynthesis.cancel() } catch (e) { /* noop */ }
@@ -1543,117 +1344,6 @@ p {
   margin-top: 1rem;
 }
 
-/* 语音识别区域样式 */
-.voice-section {
-  text-align: left;
-}
-
-.voice-hint {
-  font-size: 0.95rem;
-  opacity: 0.9;
-  margin: 0 0 1rem 0;
-}
-
-.voice-status {
-  display: inline-block;
-  padding: 0.4rem 0.9rem;
-  border-radius: 999px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  margin-bottom: 1rem;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.voice-status-idle {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.voice-status-requesting,
-.voice-status-recognizing {
-  background: rgba(78, 205, 196, 0.4);
-  color: #fff;
-}
-
-.voice-status-completed {
-  background: rgba(102, 187, 106, 0.5);
-  color: #fff;
-}
-
-.voice-status-failed,
-.voice-status-unsupported {
-  background: rgba(255, 107, 107, 0.5);
-  color: #fff;
-}
-
-.voice-controls {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
-}
-
-.voice-error {
-  background: rgba(255, 107, 107, 0.2);
-  border: 1px solid rgba(255, 107, 107, 0.5);
-  color: #ffd1d1;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.95rem;
-}
-
-.voice-result,
-.voice-fallback {
-  margin-top: 1.25rem;
-}
-
-.voice-result h3,
-.voice-fallback h3 {
-  font-size: 1.05rem;
-  margin: 0 0 0.5rem 0;
-  color: #fff;
-}
-
-.voice-result-text {
-  min-height: 3rem;
-  padding: 0.75rem 1rem;
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
-}
-
-.voice-fallback-hint {
-  font-size: 0.85rem;
-  opacity: 0.85;
-  margin: 0 0 0.5rem 0;
-}
-
-.voice-textarea {
-  width: 100%;
-  padding: 0.75rem 1rem;
-  font-size: 1rem;
-  font-family: inherit;
-  background: rgba(0, 0, 0, 0.25);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 6px;
-  resize: vertical;
-  box-sizing: border-box;
-}
-
-.voice-textarea::placeholder {
-  color: rgba(255, 255, 255, 0.5);
-}
-
-.voice-textarea:focus {
-  outline: none;
-  border-color: rgba(78, 205, 196, 0.7);
-  box-shadow: 0 0 0 2px rgba(78, 205, 196, 0.2);
-}
-
 .btn-primary {
   padding: 0.75rem 2rem;
   font-size: 1.1rem;
@@ -1720,352 +1410,6 @@ li {
 
 li:last-child {
   border-bottom: none;
-}
-
-/* 截图与压缩区域样式 */
-.capture-section {
-  text-align: left;
-}
-
-.capture-privacy-hint {
-  font-size: 0.9rem;
-  opacity: 0.9;
-  margin: 0 0 1rem 0;
-  padding: 0.6rem 0.9rem;
-  background: rgba(78, 205, 196, 0.15);
-  border-left: 3px solid rgba(78, 205, 196, 0.7);
-  border-radius: 4px;
-}
-
-.capture-status {
-  display: inline-block;
-  padding: 0.4rem 0.9rem;
-  border-radius: 999px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  margin-bottom: 1rem;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.capture-status-idle {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.capture-status-capturing {
-  background: rgba(78, 205, 196, 0.4);
-  color: #fff;
-}
-
-.capture-status-completed {
-  background: rgba(102, 187, 106, 0.5);
-  color: #fff;
-}
-
-.capture-status-failed {
-  background: rgba(255, 107, 107, 0.5);
-  color: #fff;
-}
-
-.capture-controls {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
-}
-
-.capture-warning {
-  background: rgba(255, 193, 7, 0.15);
-  border: 1px solid rgba(255, 193, 7, 0.4);
-  color: #ffe8a1;
-  padding: 0.5rem 0.85rem;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.9rem;
-}
-
-.capture-error {
-  background: rgba(255, 107, 107, 0.2);
-  border: 1px solid rgba(255, 107, 107, 0.5);
-  color: #ffd1d1;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.95rem;
-}
-
-.capture-preview {
-  margin-top: 1.25rem;
-}
-
-.capture-preview h3 {
-  font-size: 1.05rem;
-  margin: 0 0 0.5rem 0;
-  color: #fff;
-}
-
-.capture-preview-image {
-  display: block;
-  width: 100%;
-  max-width: 480px;
-  height: auto;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  margin-bottom: 1rem;
-}
-
-.capture-metadata {
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 0.85rem 1rem;
-  font-size: 0.92rem;
-  line-height: 1.7;
-}
-
-.capture-meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.capture-meta-label {
-  color: #4ecdc4;
-  font-weight: 500;
-  min-width: 7rem;
-}
-
-/* 视觉对话请求区域样式 */
-.dialogue-section {
-  text-align: left;
-}
-
-.dialogue-privacy-hint {
-  font-size: 0.9rem;
-  opacity: 0.9;
-  margin: 0 0 1rem 0;
-  padding: 0.6rem 0.9rem;
-  background: rgba(78, 205, 196, 0.15);
-  border-left: 3px solid rgba(78, 205, 196, 0.7);
-  border-radius: 4px;
-}
-
-.dialogue-status {
-  display: inline-block;
-  padding: 0.4rem 0.9rem;
-  border-radius: 999px;
-  font-size: 0.9rem;
-  font-weight: 500;
-  margin-bottom: 1rem;
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.dialogue-status-idle {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.dialogue-status-submitting {
-  background: rgba(78, 205, 196, 0.4);
-  color: #fff;
-}
-
-.dialogue-status-success {
-  background: rgba(102, 187, 106, 0.5);
-  color: #fff;
-}
-
-.dialogue-status-failed {
-  background: rgba(255, 107, 107, 0.5);
-  color: #fff;
-}
-
-.dialogue-controls {
-  display: flex;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1rem;
-}
-
-.dialogue-info {
-  background: rgba(78, 205, 196, 0.15);
-  border: 1px solid rgba(78, 205, 196, 0.4);
-  color: #c5f0ec;
-  padding: 0.6rem 0.9rem;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.95rem;
-}
-
-.dialogue-error {
-  background: rgba(255, 107, 107, 0.2);
-  border: 1px solid rgba(255, 107, 107, 0.5);
-  color: #ffd1d1;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  margin-bottom: 1rem;
-  font-size: 0.95rem;
-}
-
-.dialogue-result {
-  margin-top: 1.25rem;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 0.85rem 1rem;
-  font-size: 0.92rem;
-  line-height: 1.7;
-}
-
-.dialogue-result-notice {
-  font-weight: 500;
-  color: #ffe8a1;
-  background: rgba(255, 193, 7, 0.15);
-  border-left: 3px solid rgba(255, 193, 7, 0.7);
-  padding: 0.5rem 0.75rem;
-  border-radius: 4px;
-  margin-bottom: 0.85rem;
-}
-
-.dialogue-result-notice.success {
-  color: #c8f7c5;
-  background: rgba(102, 187, 106, 0.2);
-  border-left-color: rgba(102, 187, 106, 0.85);
-}
-
-.dialogue-answer {
-  margin: 0.85rem 0;
-  padding: 0.75rem 1rem;
-  background: rgba(78, 205, 196, 0.12);
-  border-left: 3px solid rgba(78, 205, 196, 0.7);
-  border-radius: 4px;
-}
-
-.dialogue-answer h3 {
-  margin: 0 0 0.4rem 0;
-  font-size: 1rem;
-  color: #4ecdc4;
-}
-
-.dialogue-answer-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.7;
-  font-size: 0.95rem;
-}
-
-/* PR7: AI 回答语音合成朗读控件 */
-.dialogue-speech-controls {
-  margin-top: 0.85rem;
-  padding-top: 0.75rem;
-  border-top: 1px dashed rgba(255, 255, 255, 0.18);
-}
-
-.dialogue-speech-status {
-  display: inline-block;
-  padding: 0.25rem 0.7rem;
-  border-radius: 999px;
-  font-size: 0.82rem;
-  font-weight: 500;
-  margin-bottom: 0.6rem;
-  background: rgba(255, 255, 255, 0.12);
-  color: #e6f1ff;
-}
-
-.dialogue-speech-status-idle {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.dialogue-speech-status-speaking {
-  background: rgba(78, 205, 196, 0.45);
-  color: #fff;
-}
-
-.dialogue-speech-status-done {
-  background: rgba(102, 187, 106, 0.45);
-  color: #fff;
-}
-
-.dialogue-speech-status-stopped {
-  background: rgba(255, 193, 7, 0.4);
-  color: #fff;
-}
-
-.dialogue-speech-status-failed,
-.dialogue-speech-status-unsupported {
-  background: rgba(255, 107, 107, 0.4);
-  color: #fff;
-}
-
-.dialogue-speech-buttons {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-.btn-small {
-  padding: 0.4rem 0.85rem;
-  font-size: 0.9rem;
-}
-
-.dialogue-speech-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.9rem;
-  cursor: pointer;
-  user-select: none;
-  color: #e6f1ff;
-}
-
-.dialogue-speech-toggle input {
-  cursor: pointer;
-}
-
-.dialogue-speech-warn {
-  margin-top: 0.5rem;
-  font-size: 0.88rem;
-  color: #ffd1d1;
-  background: rgba(255, 107, 107, 0.18);
-  border: 1px solid rgba(255, 107, 107, 0.4);
-  padding: 0.45rem 0.7rem;
-  border-radius: 4px;
-}
-
-.dialogue-speech-error {
-  margin-top: 0.5rem;
-  font-size: 0.88rem;
-  color: #ffd1d1;
-  background: rgba(255, 107, 107, 0.15);
-  border: 1px solid rgba(255, 107, 107, 0.35);
-  padding: 0.45rem 0.7rem;
-  border-radius: 4px;
-}
-
-.dialogue-meta-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.2rem;
-}
-
-.dialogue-meta-sub {
-  opacity: 0.75;
-  font-size: 0.85em;
-}
-
-.dialogue-meta-label {
-  color: #4ecdc4;
-  font-weight: 500;
-  min-width: 7rem;
-}
-
-.dialogue-meta-hash {
-  font-family: 'Courier New', monospace;
-  font-size: 0.85rem;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 0.05rem 0.4rem;
-  border-radius: 3px;
 }
 
 pre {
@@ -2220,6 +1564,24 @@ code {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 8px;
   padding: 0.75rem 1rem;
+}
+
+.realtime-frame {
+  margin-bottom: 0.6rem;
+}
+
+.realtime-frame-label {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.65);
+  margin-bottom: 0.35rem;
+}
+
+.realtime-frame-image {
+  max-width: 100%;
+  max-height: 280px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: block;
 }
 
 .realtime-transcript,
