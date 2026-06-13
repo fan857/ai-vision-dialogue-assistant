@@ -220,6 +220,53 @@ class QwenRealtimeSession:
         except Exception as e:  # noqa: BLE001
             logger.warning("response.cancel failed: %s", e)
 
+    async def update_frame(
+        self,
+        *,
+        image_base64: str,
+        content_type: str = "image/jpeg",
+        max_size_bytes: int = 2 * 1024 * 1024,
+        allowed_types: Optional[set] = None,
+    ) -> int:
+        """
+        替换当前会话的内存截图（PR10）。
+
+        - 不会发图片给 Qwen，只在下次工具调用 analyze_current_frame 时使用
+        - 不写入磁盘
+        - 不影响正在进行的音频上行
+
+        Returns:
+            int: 新图片字节数
+
+        Raises:
+            ValueError: 校验失败
+        """
+        if self._closed:
+            raise ValueError("会话已关闭")
+
+        b64 = (image_base64 or "").strip()
+        if not b64:
+            raise ValueError("缺少 image_base64")
+        try:
+            data = base64.b64decode(b64, validate=True)
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"image_base64 无法解析: {type(e).__name__}") from e
+        if not data:
+            raise ValueError("图片内容为空")
+        if len(data) > max_size_bytes:
+            raise ValueError(
+                f"图片超过 {max_size_bytes // (1024 * 1024)} MB"
+            )
+        ct = (content_type or "image/jpeg").lower().strip()
+        if allowed_types and ct not in allowed_types:
+            ct = "image/jpeg"
+
+        # 替换为新图片（旧的立即释放）
+        self._frame_bytes = b""
+        self._frame_bytes = data
+        self._content_type = ct
+        return len(data)
+
     async def close(self) -> None:
         if self._closed:
             return

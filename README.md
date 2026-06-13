@@ -35,10 +35,13 @@
 │   ├── pr-6.md             # PR6 文档
 │   ├── pr-7.md             # PR7 文档
 │   ├── pr-8.md             # PR8 文档
-│   └── pr-9.md             # PR9 文档
+│   ├── pr-9.md             # PR9 文档
+│   └── pr-10.md            # PR10 文档
 ├── tests/                  # 自动化测试
+│   ├── conftest.py
 │   ├── test_pr8_ws.py
-│   └── test_pr9_cache.py
+│   ├── test_pr9_cache.py
+│   └── test_pr10_dynamic_frame.py
 └── README.md               # 项目说明
 ```
 
@@ -137,6 +140,21 @@
 
 详见 [docs/pr-9.md](docs/pr-9.md)。
 
+### PR10 - 实时对话中"动态画面"：问完问题自动截最新画面
+
+✅ 解决 PR8 痛点：AI 看到的画面从「会话开始时的旧图」改为「**用户每次提问时的最新截图**」
+✅ 触发时机：用户一句话转写完成（Qwen `input_audio_transcription.completed` 事件）
+✅ 视觉关键词判定：50+ 中英文关键词子串匹配（"画面/看到/手里/颜色/this/what"等）
+✅ 手动兜底：实时区新增 `📷 重新截取画面` 按钮
+✅ 复用 PR4 截图 + 压缩（≤2MB、JPEG 80%、最长边 1024px）
+✅ 后端 `QwenRealtimeSession.update_frame()` 替换内存中的 `frame_bytes`，**不写盘**
+✅ WebSocket 协议新增 `session.update_image` / `session.image_updated` 事件
+✅ 不破坏 PR8 实时音频链路：图片**不发 Qwen**，只在工具调用时使用
+✅ 不破坏 PR9 视觉缓存：新图新 SHA-256 → 新缓存 Key；同图同问仍命中
+✅ 提示展示：实时区显示 `📸 画面已更新（123.4 KB）`，2 秒自动消失
+
+详见 [docs/pr-10.md](docs/pr-10.md)。
+
 ### PR7 - AI 回答语音合成与朗读
 
 ✅ 使用浏览器原生 `window.speechSynthesis` + `SpeechSynthesisUtterance`，**不接入云端 TTS**  
@@ -175,13 +193,15 @@ uvicorn main:app --reload --port 3001
 
 ## 后续计划
 
-MVP 链路已完成（PR1 → PR8）。后续如需继续迭代，可考虑：
+MVP 链路已完成（PR1 → PR10）。后续如需继续迭代，可考虑：
 
 - 设计文档 `DESIGN.md`：汇总用户故事、端云协同、成本控制、用户故事完成情况
 - 多轮对话 / 上下文记忆（复用最近一次视觉摘要）
 - 朗读历史 / 朗读速度 / 音调持久化
 - 实时对话打断恢复 + 音色选择 UI
 - 错误时引导重试 + AbortController 取消正在进行的模型请求
+- PR10 关键词判定升级为 LLM 意图识别（成本权衡）
+- 实时对话中的"重听 / 继续说"流式语义
 
 ⚠️ MVP 范围内不引入登录注册、数据库、后台管理系统等与题目无关的能力。
 
@@ -205,15 +225,20 @@ MVP 链路已完成（PR1 → PR8）。后续如需继续迭代，可考虑：
 13. **API Key 只放在 `backend/.env`**（`.gitignore` 已忽略），永不提交到仓库
 14. **图片不落盘**：仅在调用时存在于内存中，会话/请求结束立即释放
 15. **不持久化语音或图片**
+16. **PR10 动态画面**：实时对话中"提问时截最新画面"只在用户含视觉关键词时触发，避免无意义截图
+   - 手动 `📷 重新截取画面` 按钮作为兜底
+   - 关键词不命中时仅触发音频上行，不消耗视觉 token
+17. **PR10 内存替换不写盘**：新图替换旧图，旧图立即释放（不写磁盘）
 
-详见 [docs/pr-9.md](docs/pr-9.md)。
+详见 [docs/pr-9.md](docs/pr-9.md) / [docs/pr-10.md](docs/pr-10.md)。
 
 ## 技术栈
 
-前端：Vue3 + Vite + JavaScript  
-后端：Python + FastAPI + httpx + python-dotenv  
-视觉模型：火山方舟 Coding Plan Doubao-Seed-2.0-Pro（`https://ark.cn-beijing.volces.com/api/coding/v3`）  
-部署：待确定  
+前端：Vue3 + Vite + JavaScript
+后端：Python + FastAPI + httpx + python-dotenv + websockets
+视觉模型：火山方舟 Coding Plan Doubao-Seed-2.0-Pro（`https://ark.cn-beijing.volces.com/api/coding/v3`）
+实时语音：阿里云百炼 Qwen3.5-Omni-Flash-Realtime（WebSocket 二进制 PCM 上下行）
+部署：待确定
 
 ## 配置本地后端
 

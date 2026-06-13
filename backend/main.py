@@ -280,6 +280,38 @@ async def ws_realtime_voice(websocket: WebSocket):
                         await qwen_session.send_response_cancel()
                     continue
 
+                if ptype == "session.update_image":
+                    # PR10：用户问完问题后，更新当前会话的最新画面
+                    if not initialized or qwen_session is None:
+                        await forward_event(
+                            {"type": "session.error", "message": "会话尚未初始化，无法更新画面"}
+                        )
+                        continue
+                    b64 = (payload.get("image_base64") or "").strip()
+                    ct = (payload.get("content_type") or "").lower().strip()
+                    if not ct or ct not in REALTIME_ALLOWED_IMAGE_TYPES:
+                        ct = REALTIME_DEFAULT_CONTENT_TYPE
+                    try:
+                        new_size = await qwen_session.update_frame(
+                            image_base64=b64,
+                            content_type=ct,
+                            max_size_bytes=REALTIME_MAX_IMAGE_SIZE_BYTES,
+                            allowed_types=REALTIME_ALLOWED_IMAGE_TYPES,
+                        )
+                        await forward_event(
+                            {"type": "session.image_updated", "size_bytes": new_size}
+                        )
+                    except ValueError as e:
+                        await forward_event(
+                            {"type": "session.error", "message": str(e)}
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("update_frame failed: %s", e)
+                        await forward_event(
+                            {"type": "session.error", "message": f"更新画面失败：{type(e).__name__}"}
+                        )
+                    continue
+
                 if ptype == "session.init":
                     # 解析图片
                     b64 = (payload.get("image_base64") or "").strip()
