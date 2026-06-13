@@ -346,6 +346,7 @@
 
 <script setup>
 import { ref, computed, onBeforeUnmount } from 'vue'
+import { PCMStreamPlayer } from './audio/pcm-player.js'
 
 // ===== 图片压缩常量 =====
 const MAX_IMAGE_DIMENSION = 1280
