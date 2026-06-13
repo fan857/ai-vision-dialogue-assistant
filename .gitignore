@@ -36,6 +36,7 @@ Thumbs.db
 .cache/
 
 # Vite temp files
+vite.config.*.timestamp-*.mjs
 *.timestamp-*.mjs
 
 # Git
