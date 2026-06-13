@@ -35,5 +35,8 @@ Thumbs.db
 *.temp
 .cache/
 
+# Vite temp files
+*.timestamp-*.mjs
+
 # Git
 .git/

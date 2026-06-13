@@ -24,7 +24,8 @@
 │   └── requirements.txt    # Python 依赖
 ├── docs/                   # 设计文档
 │   ├── DESIGN.md           # 系统设计
-│   └── pr-2.md             # PR2 文档
+│   ├── pr-2.md             # PR2 文档
+│   └── pr-3.md             # PR3 文档
 └── README.md               # 项目说明
 ```
 
@@ -43,6 +44,15 @@
 ✅ 实时摄像头预览  
 ✅ 拍照功能（预留）  
 ✅ 状态显示和错误处理  
+
+### PR3 - 麦克风语音识别功能
+
+✅ 集成浏览器 Web Speech API（`SpeechRecognition` / `webkitSpeechRecognition`）  
+✅ 语音识别语言设置：中文（`zh-CN`）  
+✅ 开始/停止识别按钮 + 状态显示（未开始/请求中/识别中/完成/失败/不支持）  
+✅ 识别结果实时显示在页面（"识别到的问题"区域）  
+✅ 手动输入框 fallback（与识别结果共用 `userQuestionText` 状态）  
+✅ 浏览器不支持 / 权限拒绝 / 网络错误等场景的友好提示
 
 ## 前端运行方式
 
@@ -65,11 +75,6 @@ uvicorn main:app --reload --port 3001
 访问：http://localhost:3001/api/health
 
 ## 后续计划
-
-### PR3 - 麦克风和语音识别
-- 实现麦克风权限请求
-- 语音录制
-- 语音转文字
 
 ### PR4 - AI 模型调用
 - 调用多模态 AI 模型
