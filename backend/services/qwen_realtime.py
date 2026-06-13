@@ -28,7 +28,8 @@ from websockets.exceptions import ConnectionClosed
 
 from dotenv import load_dotenv
 
-from .vision_model import VisionModelError, call_vision_model
+from .vision_model import VisionModelError
+from .vision_service import get_vision_service
 
 logger = logging.getLogger(__name__)
 
@@ -379,19 +380,29 @@ class QwenRealtimeSession:
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                # 调用 Doubao 视觉服务（PR6）
+                # 调用统一视觉服务（PR9，带缓存/去重/耗时）
                 try:
-                    res = await call_vision_model(
+                    service = get_vision_service()
+                    result = await service.analyze(
                         question=question,
                         image_bytes=self._frame_bytes,
                         content_type=self._content_type,
                         request_id=item_id,
                     )
-                    output = res.get("answer") or "豆包视觉服务未返回内容。"
+                    output = result.get("answer") or "豆包视觉服务未返回内容。"
+                    cache_hit = bool((result.get("cache") or {}).get("hit"))
+                    source = (result.get("cache") or {}).get("source") or "model"
+                    timing = result.get("timing") or {}
                 except VisionModelError as e:
                     output = f"视觉服务调用失败：{e.message}"
+                    cache_hit = False
+                    source = "model"
+                    timing = {}
                 except Exception as e:  # noqa: BLE001
                     output = f"视觉服务异常：{type(e).__name__}"
+                    cache_hit = False
+                    source = "model"
+                    timing = {}
 
         # 通知前端：分析完成
         try:
@@ -400,6 +411,9 @@ class QwenRealtimeSession:
                     "type": "vision.analyzed",
                     "question": fc.get("arguments") or "",
                     "output_excerpt": (output or "")[:200],
+                    "cache_hit": cache_hit,
+                    "source": source,
+                    "timing": timing,
                 }
             )
         except Exception:  # noqa: BLE001

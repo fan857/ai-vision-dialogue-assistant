@@ -24,7 +24,9 @@
 │   ├── requirements.txt    # Python 依赖
 │   ├── .env.example        # 环境变量示例
 │   └── services/           # 业务服务层
-│       └── vision_model.py # 视觉模型调用
+│       ├── vision_model.py   # 视觉模型调用（PR6）
+│       ├── vision_service.py # 统一视觉服务：缓存/去重/耗时（PR9）
+│       └── qwen_realtime.py  # 阿里云百炼 Qwen Realtime 客户端（PR8）
 ├── docs/                   # 设计文档
 │   ├── pr-2.md             # PR2 文档
 │   ├── pr-3.md             # PR3 文档
@@ -32,7 +34,11 @@
 │   ├── pr-5.md             # PR5 文档
 │   ├── pr-6.md             # PR6 文档
 │   ├── pr-7.md             # PR7 文档
-│   └── pr-8.md             # PR8 文档
+│   ├── pr-8.md             # PR8 文档
+│   └── pr-9.md             # PR9 文档
+├── tests/                  # 自动化测试
+│   ├── test_pr8_ws.py
+│   └── test_pr9_cache.py
 └── README.md               # 项目说明
 ```
 
@@ -117,6 +123,20 @@
 ⚠️ 端到端真实测试需要用户本地用真实 DashScope Key 完成（沙箱无 Key 无外网）
 ⚠️ 当前不实现多会话历史、打断恢复续说、音色选择 UI
 
+### PR9 - 视觉请求缓存、并发去重与耗时统计
+
+✅ 统一视觉服务 `backend/services/vision_service.py`：所有视觉请求（HTTP + Qwen 工具）走同一入口
+✅ 短期内存缓存：缓存 Key = SHA-256(图片) + 标准化后的问题；TTL 5 分钟；LRU 上限 100 条
+✅ 并发去重：相同 key 的并发请求只调用一次模型，其他请求等待并复用结果
+✅ 失败不写入缓存：超时 / 限流 / 鉴权失败 / 上游 5xx 都不缓存
+✅ 真实耗时统计：`cache_lookup_ms` / `model_request_ms` / `total_ms`
+✅ 前端展示来源（实时分析 / 短期缓存 / 并发复用）和耗时
+✅ Qwen 工具调用复用同一份缓存（普通 HTTP 和 Qwen 共享）
+✅ 进程重启后缓存自动清空，不引入 Redis
+✅ 图片不落盘、API Key 不外泄、日志不输出 base64
+
+详见 [docs/pr-9.md](docs/pr-9.md)。
+
 ### PR7 - AI 回答语音合成与朗读
 
 ✅ 使用浏览器原生 `window.speechSynthesis` + `SpeechSynthesisUtterance`，**不接入云端 TTS**  
@@ -167,14 +187,26 @@ MVP 链路已完成（PR1 → PR8）。后续如需继续迭代，可考虑：
 
 ## 成本控制策略
 
-1. 不上传连续视频流，只在用户提问时截取当前帧
-2. 图片上传前进行压缩（PR4：最长边 1280px，JPEG 质量 0.75）
-3. 后端限制最大 2 MB（PR5 校验）
-4. 视觉模型调用固定使用 Coding Plan 端点（`/api/coding/v3`），禁止自动切换到 `/api/v3`
-5. `max_tokens = 300`，单次回答有上限
-6. 用户点击一次只调用一次模型，**不自动重试**
-7. 多轮对话复用最近一次视觉摘要（后续 PR）
-8. API Key 放在环境变量中，**永不提交到仓库**
+1. **不连续上传完整视频流**：只截取当前帧
+2. **用户主动截图 + 提问时上传**：不后台抽帧
+3. **前端图片压缩**：最长边 1280px，JPEG 质量 0.75
+4. **后端限制最大 2 MB**
+5. **固定 Coding Plan 端点**（`/api/coding/v3`），禁止自动切换到 `/api/v3`
+6. **`max_tokens = 300`**，单次回答有上限
+7. **用户点击一次只调用一次模型**，**不自动重试**
+8. **Qwen 和 Doubao 职责分离**：图片只发豆包一次，不重复发 Qwen
+9. **短期内存缓存 + 并发去重**（PR9）：
+   - 相同图片 + 相同问题在 5 分钟内直接复用结果
+   - 5 个并发相同请求只调用 1 次模型
+   - 服务重启后缓存自动清空
+10. **不开启联网搜索**：Qwen Realtime `session.update` 不带 search 工具
+11. **多轮对话复用最近视觉摘要**（在 Qwen 工具内通过缓存命中实现）
+12. **浏览器原生 SpeechSynthesis 作为实时语音不可用时的备用方案**，不引入额外 TTS 服务
+13. **API Key 只放在 `backend/.env`**（`.gitignore` 已忽略），永不提交到仓库
+14. **图片不落盘**：仅在调用时存在于内存中，会话/请求结束立即释放
+15. **不持久化语音或图片**
+
+详见 [docs/pr-9.md](docs/pr-9.md)。
 
 ## 技术栈
 
