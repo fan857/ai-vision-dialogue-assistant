@@ -158,7 +158,7 @@
       <section class="dialogue-section">
         <h2>视觉对话请求</h2>
         <p class="dialogue-privacy-hint">
-          图片仅在用户主动提交时发送到后端。当前后端只进行参数校验，不保存图片，也不会调用 AI 模型。
+          图片仅在用户主动提交时发送到后端。后端会调用火山方舟 Coding Plan Doubao-Seed-2.0-Pro 视觉模型，并将真实回答返回。
         </p>
         <div class="dialogue-status" :class="`dialogue-status-${dialogueStatus}`">
           {{ dialogueStatusText }}
@@ -173,34 +173,36 @@
           </button>
         </div>
         <div v-if="dialogueStatus === 'submitting'" class="dialogue-info">
-          正在提交视觉问题……
+          AI 正在分析当前画面……
         </div>
         <div v-if="dialogueError" class="dialogue-error">
           {{ dialogueError }}
         </div>
         <div v-if="dialogueResult" class="dialogue-result">
-          <div class="dialogue-result-notice">
-            请求链路验证成功，当前尚未接入 AI 视觉模型。
+          <div v-if="dialogueResult.status === 'success'" class="dialogue-result-notice success">
+            AI 已完成视觉分析
           </div>
-          <div v-if="dialogueResult.message" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">后端消息：</span>
-            <span>{{ dialogueResult.message }}</span>
+          <div v-if="dialogueResult.answer" class="dialogue-answer">
+            <h3>AI 视觉回答</h3>
+            <div class="dialogue-answer-text">{{ dialogueResult.answer }}</div>
+          </div>
+          <div v-if="dialogueResult.model" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">模型：</span>
+            <span>{{ dialogueResult.model }}</span>
           </div>
           <div v-if="dialogueResult.request_id" class="dialogue-meta-row">
             <span class="dialogue-meta-label">request_id：</span>
             <span>{{ dialogueResult.request_id }}</span>
           </div>
           <div v-if="dialogueResult.image" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">图片格式：</span>
-            <span>{{ dialogueResult.image.content_type }}</span>
-          </div>
-          <div v-if="dialogueResult.image" class="dialogue-meta-row">
             <span class="dialogue-meta-label">图片大小：</span>
             <span>{{ formatFileSize(dialogueResult.image.size_bytes) }}</span>
           </div>
-          <div v-if="dialogueResult.image && dialogueResult.image.sha256" class="dialogue-meta-row">
-            <span class="dialogue-meta-label">SHA-256：</span>
-            <span class="dialogue-meta-hash">{{ dialogueResult.image.sha256.substring(0, 16) }}…</span>
+          <div v-if="dialogueResult.usage" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">Token 使用：</span>
+            <span>
+              提示 {{ dialogueResult.usage.prompt_tokens }} / 完成 {{ dialogueResult.usage.completion_tokens }} / 合计 {{ dialogueResult.usage.total_tokens }}
+            </span>
           </div>
         </div>
       </section>
@@ -214,8 +216,8 @@
           <li>✅ 语音识别（已完成）</li>
           <li>✅ 摄像头截图与前端压缩（已完成）</li>
           <li>✅ 视觉对话请求链路（已完成）</li>
-          <li>🔄 视觉识别（开发中）</li>
-          <li>🔄 AI 回复生成（开发中）</li>
+          <li>✅ 视觉识别（已完成 - Doubao-Seed-2.0-Pro）</li>
+          <li>✅ AI 回复生成（已完成）</li>
           <li>🔄 语音合成（开发中）</li>
         </ul>
       </section>
@@ -468,8 +470,8 @@ const dialogueResult = ref(null)
 const dialogueStatusText = computed(() => {
   const statusMap = {
     idle: '尚未提交',
-    submitting: '正在提交视觉问题……',
-    success: '请求已成功提交',
+    submitting: 'AI 正在分析当前画面……',
+    success: 'AI 已完成视觉分析',
     failed: '提交失败'
   }
   return statusMap[dialogueStatus.value] || ''
@@ -1126,6 +1128,33 @@ li:last-child {
   padding: 0.5rem 0.75rem;
   border-radius: 4px;
   margin-bottom: 0.85rem;
+}
+
+.dialogue-result-notice.success {
+  color: #c8f7c5;
+  background: rgba(102, 187, 106, 0.2);
+  border-left-color: rgba(102, 187, 106, 0.85);
+}
+
+.dialogue-answer {
+  margin: 0.85rem 0;
+  padding: 0.75rem 1rem;
+  background: rgba(78, 205, 196, 0.12);
+  border-left: 3px solid rgba(78, 205, 196, 0.7);
+  border-radius: 4px;
+}
+
+.dialogue-answer h3 {
+  margin: 0 0 0.4rem 0;
+  font-size: 1rem;
+  color: #4ecdc4;
+}
+
+.dialogue-answer-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  font-size: 0.95rem;
 }
 
 .dialogue-meta-row {

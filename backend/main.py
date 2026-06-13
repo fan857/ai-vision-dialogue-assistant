@@ -1,7 +1,13 @@
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 import hashlib
+import logging
 import uuid
+
+from services.vision_model import VisionModelError, call_vision_model
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI 视觉对话助手 API")
 
@@ -36,16 +42,23 @@ async def vision_dialogue(
     image: UploadFile = File(...)
 ):
     """
-    视觉对话请求接口（PR5 阶段）。
+    视觉对话请求接口（PR6 阶段）。
 
-    本次只完成：
+    本次完成：
     - 接收 multipart/form-data 请求
     - 校验问题文本和图片
     - 计算图片 SHA-256
-    - 返回请求接收结果
+    - 调用火山方舟 Coding Plan Doubao-Seed-2.0-Pro 视觉模型
+    - 返回真实 AI 回答（不伪造）
 
-    本次不调用任何 AI 模型，不保存图片，不持久化任何数据。
+    本次不做：
+    - 不保存图片、不入数据库
+    - 不输出图片 Base64
+    - 不自动重试、不使用流式响应
+    - 不自动切换到 /api/v3
     """
+    request_id = str(uuid.uuid4())
+
     # ===== 问题校验 =====
     question_clean = (question or "").strip()
     if not question_clean:
@@ -82,18 +95,56 @@ async def vision_dialogue(
 
     sha256 = hashlib.sha256(image_bytes).hexdigest()
 
-    # 图片读取后保持在内存中，不落盘、不入库、不输出到日志
+    # ===== 调用视觉模型 =====
+    logger.info(
+        "Vision dialogue request received. request_id=%s question_len=%d image_size=%d",
+        request_id, len(question_clean), len(image_bytes),
+    )
+
+    try:
+        model_result = await call_vision_model(
+            question=question_clean,
+            image_bytes=image_bytes,
+            content_type=content_type,
+            request_id=request_id,
+        )
+    except VisionModelError as e:
+        logger.warning(
+            "Vision model call failed. request_id=%s error_type=%s status=%s",
+            request_id, e.error_type, e.status_code,
+        )
+        # 图片读取后保持在内存中，错误路径上不落盘、不入库、不输出到日志
+        raise HTTPException(
+            status_code=e.status_code,
+            detail=e.message,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception(
+            "Unexpected error in vision model call. request_id=%s", request_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="视觉模型调用出现未预期错误，请稍后重试。",
+        )
+
+    logger.info(
+        "Vision dialogue completed. request_id=%s model=%s answer_len=%d",
+        request_id, model_result.get("model"), len(model_result.get("answer") or ""),
+    )
+
     return {
-        "status": "accepted",
-        "message": "视觉对话请求已接收，当前尚未接入 AI 模型",
-        "request_id": str(uuid.uuid4()),
+        "status": "success",
+        "message": "AI 已完成视觉分析",
+        "request_id": request_id,
+        "answer": model_result["answer"],
+        "model": model_result["model"],
         "question": question_clean,
         "image": {
-            "filename": image.filename or "snapshot.jpg",
             "content_type": content_type,
             "size_bytes": len(image_bytes),
-            "sha256": sha256
-        }
+            "sha256": sha256,
+        },
+        "usage": model_result.get("usage"),
     }
 
 
