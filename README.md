@@ -21,12 +21,16 @@
 │   └── package.json        # 依赖配置
 ├── backend/                # Python FastAPI 后端
 │   ├── main.py             # 主服务文件
-│   └── requirements.txt    # Python 依赖
+│   ├── requirements.txt    # Python 依赖
+│   ├── .env.example        # 环境变量示例
+│   └── services/           # 业务服务层
+│       └── vision_model.py # 视觉模型调用
 ├── docs/                   # 设计文档
 │   ├── pr-2.md             # PR2 文档
 │   ├── pr-3.md             # PR3 文档
 │   ├── pr-4.md             # PR4 文档
-│   └── pr-5.md             # PR5 文档
+│   ├── pr-5.md             # PR5 文档
+│   └── pr-6.md             # PR6 文档
 └── README.md               # 项目说明
 ```
 
@@ -79,6 +83,21 @@
 ✅ 成本控制：图片仅在用户主动提交时上传，不落盘、不持久化、不调用 AI  
 ⚠️ **当前尚未接入 AI 多模态模型**，仅完成请求链路验证
 
+### PR6 - 接入火山方舟 Coding Plan Doubao-Seed-2.0-Pro 视觉模型
+
+✅ 后端新增 `backend/services/vision_model.py`，使用 `httpx` 异步调用 `/chat/completions`  
+✅ 固定使用 Coding Plan 端点：`https://ark.cn-beijing.volces.com/api/coding/v3`（禁止切换到 `/api/v3`）  
+✅ 模型名：`doubao-seed-2.0-pro`（从环境变量 `ARK_MODEL` 读取）  
+✅ 通过 `python-dotenv` 加载 `backend/.env`，API Key 仅保存在本地，不进仓库  
+✅ 多模态请求：`image_url`（Base64 Data URL）+ 用户文本，超时 60s，最大 300 tokens  
+✅ 错误处理：区分鉴权失败 / Coding Plan 无权限 / 模型名错误 / 不支持图片 / 超时 / 限流 / 上游 5xx / 响应结构异常 / 回答为空  
+✅ 日志只记录 `request_id`、状态码、错误类型，**不记录 API Key、Authorization 头或图片 Base64**  
+✅ 成功响应包含真实 `answer`（来自模型）、`model`、`request_id`、`usage`（仅在上游返回时显示）  
+✅ 前端展示真实 AI 回答、模型名、request_id、Token 使用量  
+✅ 提交中显示："AI 正在分析当前画面……"  
+✅ 成功后顶部提示："AI 已完成视觉分析"  
+⚠️ 当前不实现多轮对话、上下文记忆、AI 语音朗读
+
 ## 前端运行方式
 
 ```bash
@@ -101,12 +120,6 @@ uvicorn main:app --reload --port 3001
 
 ## 后续计划
 
-### PR6 - 接入多模态 AI 模型
-- 后端调用多模态大模型，理解图片内容 + 用户问题
-- 返回 AI 生成的文本回复
-- 简单问题不调用视觉模型（成本控制）
-- 多轮对话复用最近一次视觉摘要
-
 ### PR7 - 语音合成朗读
 - 将 AI 文本回复转为语音
 - 浏览器端 TTS 播放
@@ -114,14 +127,29 @@ uvicorn main:app --reload --port 3001
 ## 成本控制策略
 
 1. 不上传连续视频流，只在用户提问时截取当前帧
-2. 图片上传前进行压缩
-3. 只在问题涉及画面时调用视觉模型
-4. 多轮对话中复用最近一次视觉摘要
-5. 对请求进行节流，避免频繁调用模型
-6. API Key 放在环境变量中，不提交到仓库
+2. 图片上传前进行压缩（PR4：最长边 1280px，JPEG 质量 0.75）
+3. 后端限制最大 2 MB（PR5 校验）
+4. 视觉模型调用固定使用 Coding Plan 端点（`/api/coding/v3`），禁止自动切换到 `/api/v3`
+5. `max_tokens = 300`，单次回答有上限
+6. 用户点击一次只调用一次模型，**不自动重试**
+7. 多轮对话复用最近一次视觉摘要（后续 PR）
+8. API Key 放在环境变量中，**永不提交到仓库**
 
 ## 技术栈
 
 前端：Vue3 + Vite + JavaScript  
-后端：Python + FastAPI  
+后端：Python + FastAPI + httpx + python-dotenv  
+视觉模型：火山方舟 Coding Plan Doubao-Seed-2.0-Pro（`https://ark.cn-beijing.volces.com/api/coding/v3`）  
 部署：待确定  
+
+## 配置本地后端
+
+```bash
+cd backend
+cp .env.example .env
+# 编辑 .env，填入真实的 ARK_API_KEY（其余可用默认值）
+pip install -r requirements.txt
+uvicorn main:app --reload --port 3001
+```
+
+⚠️ 真实 `ARK_API_KEY` 不能写入代码、README、日志或 Git。`.env` 已在 `.gitignore` 中。
