@@ -238,6 +238,24 @@
               提示 {{ dialogueResult.usage.prompt_tokens }} / 完成 {{ dialogueResult.usage.completion_tokens }} / 合计 {{ dialogueResult.usage.total_tokens }}
             </span>
           </div>
+          <div v-if="dialogueResult.cache" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">结果来源：</span>
+            <span v-if="dialogueResult.cache.hit">
+              <span v-if="dialogueResult.cache.source === 'inflight'">并发复用（其他请求刚分析完）</span>
+              <span v-else>短期缓存（{{ dialogueResult.cache.source === 'memory' ? '内存' : dialogueResult.cache.source }}）</span>
+            </span>
+            <span v-else>Doubao 实时分析</span>
+          </div>
+          <div v-if="dialogueResult.timing" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">总耗时：</span>
+            <span>{{ formatDuration(dialogueResult.timing.total_ms) }}</span>
+            <span v-if="!dialogueResult.cache.hit" class="dialogue-meta-sub">
+              （模型 {{ formatDuration(dialogueResult.timing.model_request_ms) }}）
+            </span>
+            <span v-if="dialogueResult.cache.hit" class="dialogue-meta-sub">
+              （本次未重复调用视觉模型）
+            </span>
+          </div>
         </div>
       </section>
 
@@ -255,6 +273,10 @@
           <span :class="['realtime-status-pill', `realtime-status-${realtimeStatus}`]">
             {{ realtimeStatusText }}
           </span>
+        </div>
+
+        <div v-if="realtimeVisionNote" class="realtime-vision-note">
+          {{ realtimeVisionNote }}
         </div>
 
         <div class="realtime-controls">
@@ -393,6 +415,13 @@ const formatFileSize = (bytes) => {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+// 工具：将毫秒数转成易读格式（PR9：缓存与耗时显示）
+const formatDuration = (ms) => {
+  if (typeof ms !== 'number' || isNaN(ms) || ms < 0) return '-'
+  if (ms < 1000) return `${ms} 毫秒`
+  return `${(ms / 1000).toFixed(2)} 秒`
 }
 
 // 工具：释放旧 Object URL，避免内存泄漏
@@ -950,6 +979,7 @@ const realtimeError = ref('')
 const realtimeUserTranscript = ref('')
 const realtimeAssistantText = ref('')
 const isRealtimePlaying = ref(false)
+const realtimeVisionNote = ref('')
 
 const realtimeStatusText = computed(() => {
   const statusMap = {
@@ -1180,11 +1210,30 @@ const startRealtimeSession = async () => {
     // 工具调用 -> 视觉分析
     if (t === 'vision.analyzing') {
       realtimeStatus.value = 'analyzing'
+      realtimeVisionNote.value = '正在分析当前画面（豆包视觉）...'
       return
     }
     if (t === 'vision.analyzed') {
       // 回到 answering
       realtimeStatus.value = 'answering'
+      const hit = evt.cache_hit
+      const source = evt.source
+      if (hit) {
+        realtimeVisionNote.value =
+          source === 'inflight'
+            ? '已复用最近视觉结果（并发去重）'
+            : '已复用最近视觉结果（短期缓存）'
+      } else {
+        const total = (evt.timing && evt.timing.total_ms) || 0
+        const model = (evt.timing && evt.timing.model_request_ms) || 0
+        realtimeVisionNote.value = total
+          ? `豆包视觉分析完成（${(total / 1000).toFixed(2)} 秒，模型 ${(model / 1000).toFixed(2)} 秒）`
+          : '豆包视觉分析完成'
+      }
+      // 4 秒后清空，避免信息长时间停留
+      setTimeout(() => {
+        realtimeVisionNote.value = ''
+      }, 4000)
       return
     }
 
@@ -1325,6 +1374,8 @@ const endRealtimeSession = () => {
     try { realtimeWs.close() } catch (e) { /* noop */ }
     realtimeWs = null
   }
+
+  realtimeVisionNote.value = ''
 
   if (realtimeStatus.value !== 'failed') {
     realtimeStatus.value = 'ended'
@@ -1998,6 +2049,11 @@ li:last-child {
   margin-top: 0.2rem;
 }
 
+.dialogue-meta-sub {
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+
 .dialogue-meta-label {
   color: #4ecdc4;
   font-weight: 500;
@@ -2141,6 +2197,16 @@ code {
   background: rgba(255, 193, 7, 0.18);
   border-left: 3px solid rgba(255, 193, 7, 0.8);
   color: #ffe8a1;
+}
+
+.realtime-vision-note {
+  margin: 0.5rem 0;
+  padding: 0.4rem 0.7rem;
+  background: rgba(78, 205, 196, 0.12);
+  border-left: 3px solid rgba(78, 205, 196, 0.7);
+  color: #b6f3ec;
+  font-size: 0.92em;
+  border-radius: 4px;
 }
 
 .realtime-error {

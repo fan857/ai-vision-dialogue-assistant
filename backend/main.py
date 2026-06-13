@@ -1,7 +1,6 @@
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -10,7 +9,13 @@ from typing import Any, Dict
 
 from dotenv import load_dotenv
 
-from services.vision_model import VisionModelError, call_vision_model
+from services.vision_model import VisionModelError
+from services.vision_service import (
+    VisionService,
+    VisionServiceError,
+    get_vision_service,
+    hash_image,
+)
 from services.qwen_realtime import (
     QwenRealtimeError,
     QwenRealtimeSession,
@@ -109,24 +114,23 @@ async def vision_dialogue(
             detail=f"图片大小超过限制（最大 {MAX_IMAGE_SIZE_BYTES // (1024 * 1024)} MB）"
         )
 
-    sha256 = hashlib.sha256(image_bytes).hexdigest()
-
-    # ===== 调用视觉模型 =====
+    # ===== 走统一视觉服务（带缓存 / 去重 / 耗时） =====
     logger.info(
         "Vision dialogue request received. request_id=%s question_len=%d image_size=%d",
         request_id, len(question_clean), len(image_bytes),
     )
 
+    service: VisionService = get_vision_service()
     try:
-        model_result = await call_vision_model(
+        result = await service.analyze(
             question=question_clean,
             image_bytes=image_bytes,
             content_type=content_type,
             request_id=request_id,
         )
-    except VisionModelError as e:
+    except (VisionModelError, VisionServiceError) as e:
         logger.warning(
-            "Vision model call failed. request_id=%s error_type=%s status=%s",
+            "Vision service call failed. request_id=%s error_type=%s status=%s",
             request_id, e.error_type, e.status_code,
         )
         # 图片读取后保持在内存中，错误路径上不落盘、不入库、不输出到日志
@@ -136,7 +140,7 @@ async def vision_dialogue(
         )
     except Exception as e:  # noqa: BLE001
         logger.exception(
-            "Unexpected error in vision model call. request_id=%s", request_id
+            "Unexpected error in vision service call. request_id=%s", request_id
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -144,23 +148,26 @@ async def vision_dialogue(
         )
 
     logger.info(
-        "Vision dialogue completed. request_id=%s model=%s answer_len=%d",
-        request_id, model_result.get("model"), len(model_result.get("answer") or ""),
+        "Vision dialogue completed. request_id=%s model=%s answer_len=%d cache_hit=%s total_ms=%d model_request_ms=%d",
+        request_id,
+        result.get("model"),
+        len(result.get("answer") or ""),
+        (result.get("cache") or {}).get("hit"),
+        (result.get("timing") or {}).get("total_ms"),
+        (result.get("timing") or {}).get("model_request_ms"),
     )
 
     return {
         "status": "success",
         "message": "AI 已完成视觉分析",
         "request_id": request_id,
-        "answer": model_result["answer"],
-        "model": model_result["model"],
+        "answer": result["answer"],
+        "model": result["model"],
         "question": question_clean,
-        "image": {
-            "content_type": content_type,
-            "size_bytes": len(image_bytes),
-            "sha256": sha256,
-        },
-        "usage": model_result.get("usage"),
+        "image": result["image"],
+        "usage": result.get("usage"),
+        "cache": result.get("cache"),
+        "timing": result.get("timing"),
     }
 
 
