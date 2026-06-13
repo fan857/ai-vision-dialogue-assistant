@@ -264,7 +264,9 @@
         <h2>实时语音视觉对话（Qwen3.5-Omni-Flash-Realtime + 豆包视觉）</h2>
         <p class="realtime-hint">
           点击「开始实时对话」后，浏览器会持续把麦克风音频通过 WebSocket 发送给后端，
-          阿里云百炼 Qwen 实时识别你的问题。涉及画面时，Qwen 会自动调用豆包视觉工具分析你之前截取的画面。
+          阿里云百炼 Qwen 实时识别你的问题。涉及画面时，Qwen 会自动调用豆包视觉工具分析
+          <strong>你每次问问题时的最新画面</strong>（PR10 自动更新）。
+          你也可以随时点「📷 重新截取画面」手动替换。
           关闭会话立即停止音频上传和图片使用。
         </p>
 
@@ -302,6 +304,15 @@
             :disabled="!isRealtimePlaying"
           >
             停止当前播放
+          </button>
+          <button
+            v-if="realtimeStatus === 'listening' || realtimeStatus === 'recognizing' || realtimeStatus === 'answering' || realtimeStatus === 'playing' || realtimeStatus === 'analyzing'"
+            class="btn-secondary"
+            @click="sendRealtimeImageUpdate('manual')"
+            :disabled="!isCameraActive"
+            title="立即用当前摄像头画面替换会话中的旧图"
+          >
+            📷 重新截取画面
           </button>
         </div>
 
@@ -601,6 +612,106 @@ const clearCapturedImage = () => {
   capturedImageMetadata.value = null
   captureError.value = ''
   captureStatus.value = 'idle'
+}
+
+// PR10: 复用 captureCurrentFrame 的压缩逻辑，但只返回 { base64, contentType, sizeBytes }。
+// 不修改 capturedImageBlob / preview，避免影响普通视觉问答流程。
+const captureCurrentFrameAsBase64 = async () => {
+  if (!isCameraActive.value) {
+    throw new Error('请先打开摄像头')
+  }
+  const video = videoElement.value
+  if (!video || video.readyState < 2) {
+    throw new Error('摄像头尚未准备完成')
+  }
+  const originalWidth = video.videoWidth
+  const originalHeight = video.videoHeight
+  if (!originalWidth || !originalHeight) {
+    throw new Error('无法读取当前画面尺寸')
+  }
+
+  let targetWidth = originalWidth
+  let targetHeight = originalHeight
+  const longestSide = Math.max(originalWidth, originalHeight)
+  if (longestSide > MAX_IMAGE_DIMENSION) {
+    const scale = MAX_IMAGE_DIMENSION / longestSide
+    targetWidth = Math.round(originalWidth * scale)
+    targetHeight = Math.round(originalHeight * scale)
+  }
+
+  const canvas = document.createElement('canvas')
+  canvas.width = targetWidth
+  canvas.height = targetHeight
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('无法创建 canvas 2D 上下文')
+  ctx.drawImage(video, 0, 0, targetWidth, targetHeight)
+
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (result) => {
+        if (result) resolve(result)
+        else reject(new Error('canvas.toBlob 返回空结果'))
+      },
+      COMPRESSED_MIME_TYPE,
+      JPEG_QUALITY
+    )
+  })
+
+  const buffer = await blob.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  // 转成 binary string -> btoa，避免大字符串中转开销
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(
+      null,
+      bytes.subarray(i, Math.min(i + chunkSize, bytes.length))
+    )
+  }
+  const base64 = btoa(binary)
+  return {
+    base64,
+    contentType: blob.type || COMPRESSED_MIME_TYPE,
+    sizeBytes: blob.size,
+    width: targetWidth,
+    height: targetHeight
+  }
+}
+
+const showVisionNote = (text, durationMs = 2000) => {
+  realtimeVisionNote.value = text
+  if (realtimeVisionNoteTimer) {
+    clearTimeout(realtimeVisionNoteTimer)
+  }
+  realtimeVisionNoteTimer = setTimeout(() => {
+    realtimeVisionNote.value = ''
+    realtimeVisionNoteTimer = null
+  }, durationMs)
+}
+
+const sendRealtimeImageUpdate = async (reason = 'manual') => {
+  if (!realtimeWs.value || realtimeWs.value.readyState !== WebSocket.OPEN) {
+    return
+  }
+  let payload
+  try {
+    payload = await captureCurrentFrameAsBase64()
+  } catch (e) {
+    console.warn('PR10 capture for update failed:', e)
+    return
+  }
+  realtimeWs.value.send(
+    JSON.stringify({
+      type: 'session.update_image',
+      image_base64: payload.base64,
+      content_type: payload.contentType
+    })
+  )
+  if (reason === 'manual') {
+    showVisionNote('📸 画面已更新（手动）', 2000)
+  } else if (reason === 'auto') {
+    showVisionNote('📸 画面已更新（自动）', 2000)
+  }
 }
 
 // ===== 视觉对话请求相关状态 =====
@@ -980,6 +1091,35 @@ const realtimeUserTranscript = ref('')
 const realtimeAssistantText = ref('')
 const isRealtimePlaying = ref(false)
 const realtimeVisionNote = ref('')
+let realtimeVisionNoteTimer = null
+
+// PR10: 视觉关键词判定（中英文混合）。命中时，用户一句话转写完成后会触发一次新截图。
+const VISION_KEYWORDS = [
+  // 中文
+  '画面', '看到', '看到我', '看到你', '看见', '画面里', '画面中',
+  '手里', '手上', '手里拿', '拿着', '手上拿',
+  '桌上', '桌子上', '桌前', '桌旁',
+  '颜色', '几个', '多少个', '哪个',
+  '字', '文字', '写', '读', '数字', '数字是',
+  '衣服', '穿', '戴', '帽子', '眼镜', '口罩',
+  '坐', '站', '姿势',
+  '背景', '前', '后', '左', '右', '上', '下',
+  '脸', '眼睛', '嘴', '头发', '表情',
+  '杯子', '手机', '电脑', '屏幕', '键盘', '鼠标',
+  '这是', '这是啥', '这是啥东西', '这是啥？', '这是什么',
+  '手里是', '是啥', '是什么',
+  // 英文
+  'this', 'what', 'which', 'how many', 'color', 'background',
+  'look', 'see', 'show', 'here', 'in my hand', 'on the desk',
+  'wear', 'wearing', 'hold', 'holding', 'in the picture',
+  'in this', 'image', 'frame', 'screen'
+]
+
+const shouldCaptureFrame = (text) => {
+  if (!text) return false
+  const lower = String(text).toLowerCase()
+  return VISION_KEYWORDS.some((kw) => lower.includes(kw))
+}
 
 const realtimeStatusText = computed(() => {
   const statusMap = {
@@ -1153,6 +1293,13 @@ const startRealtimeSession = async () => {
       return
     }
 
+    // PR10: 后端确认画面已更新
+    if (t === 'session.image_updated') {
+      const kb = evt.size_bytes ? (evt.size_bytes / 1024).toFixed(1) : ''
+      showVisionNote(kb ? `📸 画面已更新（${kb} KB）` : '📸 画面已更新', 2000)
+      return
+    }
+
     if (t === 'server.disconnected') {
       realtimeStatus.value = 'ended'
       return
@@ -1182,6 +1329,12 @@ const startRealtimeSession = async () => {
       const transcript = evt.transcript || evt.text || ''
       if (transcript && !realtimeUserTranscript.value.includes(transcript)) {
         appendUserTranscript(transcript)
+      }
+      // PR10: 用户一句话转写完成时，如果含视觉关键词，自动更新后端内存中的画面
+      if (transcript && shouldCaptureFrame(transcript)) {
+        // 显示过渡提示，2 秒后被后端 image_updated 反馈覆盖
+        showVisionNote('📸 正在分析当前画面……', 2000)
+        sendRealtimeImageUpdate('auto')
       }
       return
     }
