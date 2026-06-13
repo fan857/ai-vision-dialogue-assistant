@@ -154,6 +154,57 @@
         </div>
       </section>
 
+      <!-- 视觉对话请求提交区域 -->
+      <section class="dialogue-section">
+        <h2>视觉对话请求</h2>
+        <p class="dialogue-privacy-hint">
+          图片仅在用户主动提交时发送到后端。当前后端只进行参数校验，不保存图片，也不会调用 AI 模型。
+        </p>
+        <div class="dialogue-status" :class="`dialogue-status-${dialogueStatus}`">
+          {{ dialogueStatusText }}
+        </div>
+        <div class="dialogue-controls">
+          <button
+            class="btn-primary"
+            @click="submitVisualQuestion"
+            :disabled="dialogueStatus === 'submitting' || !capturedImageBlob"
+          >
+            提交视觉问题
+          </button>
+        </div>
+        <div v-if="dialogueStatus === 'submitting'" class="dialogue-info">
+          正在提交视觉问题……
+        </div>
+        <div v-if="dialogueError" class="dialogue-error">
+          {{ dialogueError }}
+        </div>
+        <div v-if="dialogueResult" class="dialogue-result">
+          <div class="dialogue-result-notice">
+            请求链路验证成功，当前尚未接入 AI 视觉模型。
+          </div>
+          <div v-if="dialogueResult.message" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">后端消息：</span>
+            <span>{{ dialogueResult.message }}</span>
+          </div>
+          <div v-if="dialogueResult.request_id" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">request_id：</span>
+            <span>{{ dialogueResult.request_id }}</span>
+          </div>
+          <div v-if="dialogueResult.image" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">图片格式：</span>
+            <span>{{ dialogueResult.image.content_type }}</span>
+          </div>
+          <div v-if="dialogueResult.image" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">图片大小：</span>
+            <span>{{ formatFileSize(dialogueResult.image.size_bytes) }}</span>
+          </div>
+          <div v-if="dialogueResult.image && dialogueResult.image.sha256" class="dialogue-meta-row">
+            <span class="dialogue-meta-label">SHA-256：</span>
+            <span class="dialogue-meta-hash">{{ dialogueResult.image.sha256.substring(0, 16) }}…</span>
+          </div>
+        </div>
+      </section>
+
       <section class="features">
         <h2>核心功能（开发中）</h2>
         <ul>
@@ -162,6 +213,7 @@
           <li>✅ 麦克风调用（已完成）</li>
           <li>✅ 语音识别（已完成）</li>
           <li>✅ 摄像头截图与前端压缩（已完成）</li>
+          <li>✅ 视觉对话请求链路（已完成）</li>
           <li>🔄 视觉识别（开发中）</li>
           <li>🔄 AI 回复生成（开发中）</li>
           <li>🔄 语音合成（开发中）</li>
@@ -406,6 +458,80 @@ const clearCapturedImage = () => {
   capturedImageMetadata.value = null
   captureError.value = ''
   captureStatus.value = 'idle'
+}
+
+// ===== 视觉对话请求相关状态 =====
+const dialogueStatus = ref('idle') // idle, submitting, success, failed
+const dialogueError = ref('')
+const dialogueResult = ref(null)
+
+const dialogueStatusText = computed(() => {
+  const statusMap = {
+    idle: '尚未提交',
+    submitting: '正在提交视觉问题……',
+    success: '请求已成功提交',
+    failed: '提交失败'
+  }
+  return statusMap[dialogueStatus.value] || ''
+})
+
+const submitVisualQuestion = async () => {
+  dialogueError.value = ''
+  dialogueResult.value = null
+
+  // 校验截图
+  if (!capturedImageBlob.value) {
+    dialogueError.value = '请先打开摄像头并截取当前画面。'
+    dialogueStatus.value = 'failed'
+    return
+  }
+
+  // 校验问题（去空格后非空）
+  const questionClean = (userQuestionText.value || '').trim()
+  if (!questionClean) {
+    dialogueError.value = '请先通过语音识别或手动输入问题。'
+    dialogueStatus.value = 'failed'
+    return
+  }
+
+  dialogueStatus.value = 'submitting'
+
+  try {
+    const formData = new FormData()
+    formData.append('question', questionClean)
+    // 给 Blob 起一个文件名，方便后端使用
+    const filename = `snapshot.${capturedImageMetadata.value?.mimeType === 'image/png' ? 'png' : 'jpg'}`
+    formData.append('image', capturedImageBlob.value, filename)
+
+    const response = await fetch('/api/vision-dialogue', {
+      method: 'POST',
+      body: formData
+    })
+
+    if (!response.ok) {
+      // 优先展示后端 detail
+      let detail = ''
+      try {
+        const data = await response.json()
+        detail = data && data.detail ? data.detail : ''
+      } catch (e) {
+        // 后端没返回 JSON，忽略
+      }
+      throw new Error(detail || `请求失败（HTTP ${response.status}）`)
+    }
+
+    const data = await response.json()
+    dialogueResult.value = data
+    dialogueStatus.value = 'success'
+  } catch (error) {
+    console.error('Submit visual question failed:', error)
+    if (error && error.name === 'TypeError' && /fetch/i.test(error.message || '')) {
+      dialogueError.value = '网络异常，无法连接后端服务。请确认后端已启动（http://localhost:3001）。'
+    } else {
+      dialogueError.value = '提交失败：' + (error && error.message ? error.message : '未知错误')
+    }
+    dialogueStatus.value = 'failed'
+  }
 }
 
 // ===== 语音识别方法 =====
@@ -909,6 +1035,118 @@ li:last-child {
   color: #4ecdc4;
   font-weight: 500;
   min-width: 7rem;
+}
+
+/* 视觉对话请求区域样式 */
+.dialogue-section {
+  text-align: left;
+}
+
+.dialogue-privacy-hint {
+  font-size: 0.9rem;
+  opacity: 0.9;
+  margin: 0 0 1rem 0;
+  padding: 0.6rem 0.9rem;
+  background: rgba(78, 205, 196, 0.15);
+  border-left: 3px solid rgba(78, 205, 196, 0.7);
+  border-radius: 4px;
+}
+
+.dialogue-status {
+  display: inline-block;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  margin-bottom: 1rem;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.dialogue-status-idle {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.dialogue-status-submitting {
+  background: rgba(78, 205, 196, 0.4);
+  color: #fff;
+}
+
+.dialogue-status-success {
+  background: rgba(102, 187, 106, 0.5);
+  color: #fff;
+}
+
+.dialogue-status-failed {
+  background: rgba(255, 107, 107, 0.5);
+  color: #fff;
+}
+
+.dialogue-controls {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.dialogue-info {
+  background: rgba(78, 205, 196, 0.15);
+  border: 1px solid rgba(78, 205, 196, 0.4);
+  color: #c5f0ec;
+  padding: 0.6rem 0.9rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.dialogue-error {
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px solid rgba(255, 107, 107, 0.5);
+  color: #ffd1d1;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.dialogue-result {
+  margin-top: 1.25rem;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  font-size: 0.92rem;
+  line-height: 1.7;
+}
+
+.dialogue-result-notice {
+  font-weight: 500;
+  color: #ffe8a1;
+  background: rgba(255, 193, 7, 0.15);
+  border-left: 3px solid rgba(255, 193, 7, 0.7);
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  margin-bottom: 0.85rem;
+}
+
+.dialogue-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.dialogue-meta-label {
+  color: #4ecdc4;
+  font-weight: 500;
+  min-width: 7rem;
+}
+
+.dialogue-meta-hash {
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
 }
 
 pre {
